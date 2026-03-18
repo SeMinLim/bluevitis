@@ -1,5 +1,6 @@
-# bluespec-vitis-core
-Boilerplace codebase for using Bluespec System Verilog for Xilinx Alveo FPGA kernel development.
+# blueVitis
+Another Boilerplate codebase for using Bluespec System Verilog for Xilinx Alveo FPGA kernel development.
+BlueVitis originated from "bluespec-vitis-core," which was developed by my esteemed advisor, Sang-Woo Jun. 
 
 ## File structure
 * hw/
