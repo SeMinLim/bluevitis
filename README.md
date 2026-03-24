@@ -8,7 +8,7 @@
 
 ## Clone bluelibrary
 * blueVitis depends on the library, [blueLibrary](https://github.com/SeMinLim/bluelibrary).
-* By default, bluelibrary must be cloned at the same level as bluespec-vitis-core (e.g., ~/bluevitis and ~/bluelibrary).
+* By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
 
 ## How to build
 * Building and packaging kernel, xclbin, and hw: cd to hw/, run `make`
