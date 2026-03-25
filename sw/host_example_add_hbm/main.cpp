@@ -29,8 +29,13 @@ using namespace std;
 
 
 int main(int argc, char** argv) {
-	// Load xclbin
-	string xclbin_file = "../../hw/kernel_example_add_hbm/hw/kernel.xclbin";
+	if ( argc != 2 ) {
+		cout << "Usage: " << argv[0] << " <XCLBIN File Path>" << endl;
+		return EXIT_FAILURE;
+	}
+	
+	// Load XCLBIN
+	string xclbin_file = argv[1];
 	xrt::device device = xrt::device(DEVICE_ID);
 	xrt::uuid xclbin_uuid = device.load_xclbin(xclbin_file);
 	

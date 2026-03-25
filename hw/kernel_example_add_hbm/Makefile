@@ -1,39 +1,37 @@
-.DEFAULT_GOAL := all_xclbin
+SHELL := /bin/bash
+PWD = $(shell readlink -f .)
 
-ROOT_DIR = ../../
+.DEFAULT_GOAL := help
+
+NEEDS_TARGET := $(filter all run build,$(MAKECMDGOALS))
+ifneq ($(NEEDS_TARGET),)
+ifeq ($(filter $(TARGET),hw hw_emu),)
+$(error [ERROR] TARGET must be specified! Usage: 'make $(word 1, $(NEEDS_TARGET)) TARGET=<hw_emu/hw>')
+endif
+endif
+
 PLATFORM ?= xilinx_u50_gen3x16_xdma_5_202210_1
-BSCFLAGS = -show-schedule -aggressive-conditions 
-BSCFLAGS_SYNTH = -bdir ./obj -vdir ./obj/verilog -simdir ./obj -info-dir ./obj -fdir ./obj 
-TARGET := hw
-BUILD_DIR := ./$(TARGET)
-BLIB_DIR = $(ROOT_DIR)/../bluelib/src
+PROJECT := example_add_hbm
 
+include makefile_us_alveo.mk
 
-.PHONY: all verilog clean clean_all all_xclbin
-
-MODULEPATH=
-VIVADO := $(XILINX_VIVADO)/bin/vivado
-BOARD_MAKEFILE := makefile_us_alveo.mk
-
-all_xclbin: $(BUILD_DIR)/kernel.xo
-	$(MAKE) -f $(BOARD_MAKEFILE) TARGET=$(TARGET) PLATFORM=$(PLATFORM) package
-
-$(BUILD_DIR)/kernel.xo: ./kernel.xml ./scripts/package_kernel.tcl ./scripts/gen_xo.tcl $(wildcard ./obj/verilog/*.v) verilog
-	mkdir -p obj
-	mkdir -p $(BUILD_DIR)
-	$(VIVADO) -mode batch -tempDir obj -source scripts/gen_xo.tcl -tclargs $(BUILD_DIR)/kernel.xo kernel $(TARGET) $(PLATFORM)
-
-verilog: $(wildcard *.bsv) $(wildcard *.v)
-	mkdir -p obj
-	mkdir -p obj/verilog
-	bsc  $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -p +:$(MODULEPATH):$(BLIB_DIR) -verilog -u -g kernel KernelTop.bsv
-	cd obj/verilog/;bash ../../scripts/verilogcopy.sh
-	cp *.v ./obj/verilog/
-
-clean:
-	rm -rf obj $(BUILD_DIR)/kernel.xo
-	rm -rf *.log *.jou
-
-clean_all: clean
-	$(MAKE) -f $(BOARD_MAKEFILE) clean
-	rm -rf ./analyzer_input
+help:
+	@echo "Makefile Usage:"
+	@echo "  make all TARGET=<hw_emu/hw> PLATFORM=<FPGA platform>"
+	@echo "      Command to generate the design for specified Target and Shell."
+	@echo ""
+	@echo "  make run TARGET=<hw_emu/hw> PLATFORM=<FPGA platform>"
+	@echo "      Command to run application in emulation."
+	@echo ""
+	@echo "  make build TARGET=<hw_emu/hw> PLATFORM=<FPGA platform>"
+	@echo "      Command to build xclbin application."
+	@echo ""
+	@echo "  make host"
+	@echo "      Command to build host application."
+	@echo ""
+	@echo "  make clean "
+	@echo "      Command to remove the generated non-hardware files."
+	@echo ""
+	@echo "  make cleanall"
+	@echo "      Command to remove all the generated files."
+	@echo ""

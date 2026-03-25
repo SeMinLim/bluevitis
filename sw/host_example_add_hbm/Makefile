@@ -5,3 +5,5 @@ all:
 
 clean:
 	rm -rf obj/
+	rm -rf *.log
+	rm -rf emconfig.json
