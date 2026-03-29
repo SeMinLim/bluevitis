@@ -5,7 +5,7 @@ SHELL := /bin/bash
 BUILD_DIR := ./$(TARGET)
 OBJ_DIR := ./obj
 HOSTDIR := ../../sw/host_$(PROJECT)
-BLIB_DIR := ../../../bluelib/src
+BLIB_DIR := ../../../bluelibrary
 #----------------------------------------------------------------------------------------
 # 2. Host C++ Global Settings
 #----------------------------------------------------------------------------------------
@@ -36,9 +36,10 @@ $(HOSTDIR)/obj/main:
 $(OBJ_DIR)/verilog/.done: $(wildcard *.bsv) $(wildcard *.v)
 	mkdir -p $(OBJ_DIR)
 	mkdir -p $(OBJ_DIR)/verilog
-	bsc $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -p +:$(BLIB_DIR) -verilog -u -g kernel KernelTop.bsv
+	bsc $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -p +:$(BLIB_DIR)/bsv -verilog -u -g kernel KernelTop.bsv
 	cd $(OBJ_DIR)/verilog/ && bash ../../scripts/verilogcopy.sh
-	cp *.v $(OBJ_DIR)/verilog/
+	cp *.v $(OBJ_DIR)/verilog/ 2>/dev/null || true
+	cp $(BLUELIB_DIR)/verilog/*.v $(OBJ_DIR)/verilog/ 2>/dev/null || true
 	@touch $@
 $(BUILD_DIR)/kernel.xo: ./kernel.xml ./scripts/package_kernel.tcl ./scripts/gen_xo.tcl $(OBJ_DIR)/verilog/.done
 	mkdir -p $(BUILD_DIR)
