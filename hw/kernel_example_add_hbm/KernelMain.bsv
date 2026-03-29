@@ -5,9 +5,6 @@ import Vector::*;
 import BRAM::*;
 import BRAMFIFO::*;
 
-import Serializer::*;
-import BLShifter::*;
-
 
 typedef 1 DataCntTotal512b_X;
 typedef 1 DataCntTotal512b_Y;
