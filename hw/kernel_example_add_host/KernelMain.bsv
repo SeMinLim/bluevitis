@@ -49,11 +49,14 @@ module mkKernelMain(KernelMainIfc);
 	Reg#(Bool) reqReadDataOn_X <- mkReg(False);
 	Reg#(Bool) readDataOn_X <- mkReg(False);
 	Reg#(Bool) reqReadUramOn_X <- mkReg(False);
+	Reg#(Bool) readUramOn_X <- mkReg(False);
 
 	Reg#(Bool) reqReadDataOn_Y <- mkReg(False);
 	Reg#(Bool) readDataOn_Y <- mkReg(False);
 	Reg#(Bool) reqReadUramOn_Y <- mkReg(False);
+	Reg#(Bool) readUramOn_Y <- mkReg(False);
 
+	Reg#(Bool) examOn <- mkReg(False);
 	Reg#(Bool) reqWriteResultOn <- mkReg(False);
 	Reg#(Bool) writeResultOn <- mkReg(False);
 	//------------------------------------------------------------------------------------
@@ -79,7 +82,7 @@ module mkKernelMain(KernelMainIfc);
 		started <= True;
 		reqReadDataOn_X	<= True;
 		reqReadDataOn_Y	<= True;
-		reqWriteResultOn <= True;
+		examOn <= True;
 	endrule
 	//------------------------------------------------------------------------------------
 	// [Memory Read]
@@ -141,9 +144,25 @@ module mkKernelMain(KernelMainIfc);
 			reqReadUramOn_X <= False;
 			$display( "[KernelMain] Requesting URAM_X is Done!" );
 		end else begin
-			if ( reqReadUramCnt_X == 0 ) $display( "[KernelMain] Reading URAM_X is Started!" );
+			if ( reqReadUramCnt_X == 0 ) $display( "[KernelMain] Requesting URAM_X is Started!" );
 			uramReadAddr_X <= uramReadAddr_X + 64;
 			reqReadUramCnt_X <= reqReadUramCnt_X + 1;
+		end
+
+		readUramOn_X <= True;
+	endrule
+	Reg#(Bit#(32)) readUramCnt_X <- mkReg(0);
+	rule readUramX( readUramOn_X );
+		let d <- uramX.portB.response.get();
+		dataQ_X.enq(d);
+
+		if ( readUramCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
+			readUramCnt_X <= 0;
+			readUramOn_X <= False;
+			$display( "[KernelMain] Reading URAM_X is Done!" );
+		end else begin
+			if ( readUramCnt_X == 0 ) $display( "[KernelMain] Reading URAM_X is Started!" );
+			readUramCnt_X <= readUramCnt_X + 1;
 		end
 	endrule
 
@@ -174,40 +193,55 @@ module mkKernelMain(KernelMainIfc);
 	
 		uramY.portA.request.put(BRAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_Y, datain:data});
 		
-		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			uramWriteAddr_X <= 0;
-			readDataCnt_X <= 0;
-			readDataOn_X <= False;
-			reqReadUramOn_X <= True;
-			$display( "[KernelMain] Reading Global Memory Port A is Done!" );
+		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
+			uramWriteAddr_Y <= 0;
+			readDataCnt_Y <= 0;
+			readDataOn_Y <= False;
+			reqReadUramOn_Y <= True;
+			$display( "[KernelMain] Reading Global Memory Port B is Done!" );
 		end else begin
-			if ( readDataCnt_X == 0 ) $display( "[KernelMain] Reading Global Memory Port A is Started!" );
-			uramWriteAddr_X <= uramWriteAddr_X + 64;
-			readDataCnt_X <= readDataCnt_X + 1;
+			if ( readDataCnt_Y == 0 ) $display( "[KernelMain] Reading Global Memory Port B is Started!" );
+			uramWriteAddr_Y <= uramWriteAddr_Y + 64;
+			readDataCnt_Y <= readDataCnt_Y + 1;
 		end
-
-		cycleStart <= cycleCounter;
 	endrule
-	Reg#(Bit#(32)) reqReadUramCnt_X <- mkReg(0);
-	Reg#(Bit#(10)) uramReadAddr_X <- mkReg(0);
-	rule reqReadUramX( reqReadUramOn_X );
-		uramX.portB.request.put(BRAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_X, datain:?});
+	Reg#(Bit#(32)) reqReadUramCnt_Y <- mkReg(0);
+	Reg#(Bit#(10)) uramReadAddr_Y <- mkReg(0);
+	rule reqReadUramY( reqReadUramOn_Y );
+		uramY.portB.request.put(BRAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_Y, datain:?});
 
-		if ( reqReadUramCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			uramReadAddr_X <= 0;
-			reqReadUramCnt_X <= 0;
-			reqReadUramOn_X <= False;
-			$display( "[KernelMain] Requesting URAM_X is Done!" );
+		if ( reqReadUramCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
+			uramReadAddr_Y <= 0;
+			reqReadUramCnt_Y <= 0;
+			reqReadUramOn_Y <= False;
+			$display( "[KernelMain] Requesting URAM_Y is Done!" );
 		end else begin
-			if ( reqReadUramCnt_X == 0 ) $display( "[KernelMain] Reading URAM_X is Started!" );
-			uramReadAddr_X <= uramReadAddr_X + 64;
-			reqReadUramCnt_X <= reqReadUramCnt_X + 1;
+			if ( reqReadUramCnt_Y == 0 ) $display( "[KernelMain] Reading URAM_Y is Started!" );
+			uramReadAddr_Y <= uramReadAddr_Y + 64;
+			reqReadUramCnt_Y <= reqReadUramCnt_Y + 1;
 		end
+	endrule
+	Reg#(Bit#(32)) readUramCnt_Y <- mkReg(0);
+	rule readUramY( readUramOn_Y );
+		let d <- uramY.portB.response.get();
+		dataQ_Y.enq(d);
+
+		if ( readUramCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
+			readUramCnt_Y <= 0;
+			readUramOn_Y <= False;
+			$display( "[KernelMain] Reading URAM_Y is Done!" );
+		end else begin
+			if ( readUramCnt_Y == 0 ) $display( "[KernelMain] Reading URAM_Y is Started!" );
+			readUramCnt_Y <= readUramCnt_Y + 1;
+		end
+
+		reqWriteResultOn <= True;
 	endrule
 	//------------------------------------------------------------------------------------
 	// Example Logic
 	//------------------------------------------------------------------------------------
-	rule example_1;
+	Reg#(Bit#(32)) examCnt <- mkReg(0);
+	rule example_2( examOn );
 		dataQ_X.deq;
 		dataQ_Y.deq;
 		let x = dataQ_X.first;
@@ -215,31 +249,53 @@ module mkKernelMain(KernelMainIfc);
 
 		Bit#(512) r = x + y;
 		
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Running example is done!\n", cycleCounter );
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : %lu\n", r );
-
 		resultQ.enq(r);
+
+		if ( examCnt + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
+			examCnt <= 0;
+			examOn <= False;
+			$display( "[KernelMain] Running Example Logic is Done!" );
+		end else begin
+			if ( examCnt == 0 ) $display( "[KernelMain] Running Example Logic is Started!" );
+			examCnt <= examCnt + 1;
+		end
 	endrule
 	//------------------------------------------------------------------------------------
 	// [Memory Write] & [System Finish]
-	// Memory Writer is going to use HBM[1] 
-	// 536,870,912 
+	// Memory Writer is going to use global memory port 2 
 	//------------------------------------------------------------------------------------
+	Reg#(Bit#(32)) reqWriteResultCnt <- mkReg(0);
 	rule reqWriteResult( reqWriteResultOn );
 		writeReqQs[1].enq(MemPortReq{addr:fromInteger(valueOf(ResultAddrStart)), bytes:64});
 		
-		reqWriteResultOn <= False;
+
+		if ( reqWriteResultCnt + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
+			reqWriteResultCnt <= 0;
+			reqWriteResultOn <= False;
+			$display( "[KernelMain] Requesting of Writing Result is Done!" );
+		end else begin
+			if ( reqWriteResultCnt == 0 ) $display( "[KernelMain] Requesting of Writing Result is Started!" );
+			reqWriteResultCnt <= reqWriteResultCnt + 1;
+		end
+
 		writeResultOn <= True;
 	endrule
+	Reg#(Bit#(32)) writeResultCnt <- mkReg(0);
 	rule writeResult( writeResultOn );
 		resultQ.deq;
 		let r = resultQ.first;
 		writeWordQs[1].enq(r);
-
-		// System Finish
-		writeResultOn <= False;
-		started	<= False;
-		doneQ.enq(True);
+		
+		if ( writeResultCnt + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
+			writeResultCnt <= 0;
+			writeResultOn <= False;
+			started <= False;
+			doneQ.enq(True);
+			$display( "[KernelMain] Writing Result is Done!" );
+		end else begin
+			if ( writeResultCnt == 0 ) $display( "[KernelMain] Writing Result is Started!" );
+			writeResultCnt <= writeResultCnt + 1;
+		end
 	endrule
 	//------------------------------------------------------------------------------------
 	// Interface
