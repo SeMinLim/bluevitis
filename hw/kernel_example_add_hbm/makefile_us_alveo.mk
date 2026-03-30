@@ -39,7 +39,7 @@ $(OBJ_DIR)/verilog/.done: $(wildcard *.bsv) $(wildcard *.v)
 	bsc $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -p +:$(BLIB_DIR)/bsv -verilog -u -g kernel KernelTop.bsv
 	cd $(OBJ_DIR)/verilog/ && bash ../../scripts/verilogcopy.sh
 	cp *.v $(OBJ_DIR)/verilog/ 2>/dev/null || true
-	cp $(BLUELIB_DIR)/verilog/*.v $(OBJ_DIR)/verilog/ 2>/dev/null || true
+	cp $(BLIB_DIR)/verilog/*.v $(OBJ_DIR)/verilog/ 
 	@touch $@
 $(BUILD_DIR)/kernel.xo: ./kernel.xml ./scripts/package_kernel.tcl ./scripts/gen_xo.tcl $(OBJ_DIR)/verilog/.done
 	mkdir -p $(BUILD_DIR)
@@ -91,6 +91,7 @@ clean:
 	@echo "Cleaning non-hardware files (Logs, Objects)..."
 	rm -rf $(OBJ_DIR) *.log *.jou xilinx* .Xil _x emconfig.json
 	rm -rf ./analyzer_input
+	rm -rf *.csv xrt.run_summary
 	$(MAKE) -C $(HOSTDIR) clean
 
 cleanall: clean
