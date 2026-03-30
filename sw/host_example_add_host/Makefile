@@ -1,0 +1,9 @@
+.PHONY: all
+all:
+	mkdir -p obj/
+	g++ -g -std=c++17 -Wall -O0 main.cpp -o ./obj/main -I$(XILINX_XRT)/include/ -L$(XILINX_XRT)/lib -lxrt_coreutil -pthread
+
+clean:
+	rm -rf obj/
+	rm -rf *.log
+	rm -rf emconfig.json
