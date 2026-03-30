@@ -72,8 +72,8 @@ module mkKernelMain(KernelMainIfc);
 	// [URAM]
 	//------------------------------------------------------------------------------------
 	BRAM_Configure cfg = defaultValue;
-	BRAM2Port#(Bit#(10), Bit#(512)) uramX <- mkURAM2Server(cfg);
-	BRAM2Port#(Bit#(10), Bit#(512)) uramY <- mkURAM2Server(cfg);
+	BRAM2Port#(Bit#(10), Bit#(512)) uramX <- mkBRAM2Server(cfg);
+	BRAM2Port#(Bit#(10), Bit#(512)) uramY <- mkBRAM2Server(cfg);
 	//------------------------------------------------------------------------------------
 	// [System Start]
 	//------------------------------------------------------------------------------------
@@ -127,7 +127,7 @@ module mkKernelMain(KernelMainIfc);
 			$display( "[KernelMain] Reading Global Memory Port A is Done!" );
 		end else begin
 			if ( readDataCnt_X == 0 ) $display( "[KernelMain] Reading Global Memory Port A is Started!" );
-			uramWriteAddr_X <= uramWriteAddr_X + 64;
+			uramWriteAddr_X <= uramWriteAddr_X + 1;
 			readDataCnt_X <= readDataCnt_X + 1;
 		end
 
@@ -145,7 +145,7 @@ module mkKernelMain(KernelMainIfc);
 			$display( "[KernelMain] Requesting URAM_X is Done!" );
 		end else begin
 			if ( reqReadUramCnt_X == 0 ) $display( "[KernelMain] Requesting URAM_X is Started!" );
-			uramReadAddr_X <= uramReadAddr_X + 64;
+			uramReadAddr_X <= uramReadAddr_X + 1;
 			reqReadUramCnt_X <= reqReadUramCnt_X + 1;
 		end
 
@@ -201,7 +201,7 @@ module mkKernelMain(KernelMainIfc);
 			$display( "[KernelMain] Reading Global Memory Port B is Done!" );
 		end else begin
 			if ( readDataCnt_Y == 0 ) $display( "[KernelMain] Reading Global Memory Port B is Started!" );
-			uramWriteAddr_Y <= uramWriteAddr_Y + 64;
+			uramWriteAddr_Y <= uramWriteAddr_Y + 1;
 			readDataCnt_Y <= readDataCnt_Y + 1;
 		end
 	endrule
@@ -217,9 +217,11 @@ module mkKernelMain(KernelMainIfc);
 			$display( "[KernelMain] Requesting URAM_Y is Done!" );
 		end else begin
 			if ( reqReadUramCnt_Y == 0 ) $display( "[KernelMain] Reading URAM_Y is Started!" );
-			uramReadAddr_Y <= uramReadAddr_Y + 64;
+			uramReadAddr_Y <= uramReadAddr_Y + 1;
 			reqReadUramCnt_Y <= reqReadUramCnt_Y + 1;
 		end
+
+		readUramOn_Y <= True;
 	endrule
 	Reg#(Bit#(32)) readUramCnt_Y <- mkReg(0);
 	rule readUramY( readUramOn_Y );
