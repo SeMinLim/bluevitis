@@ -31,9 +31,17 @@
   * If you only modified the C++ host code (`sw/host_example/main.cpp`) and want to recompile the software without touching the hardware bitstream:
   * ```make host```
 * Running on the FPGA
+  * Once the `TARGET=hw` build is fully complete, execute the packaged host application:
+  * ```make run TARGET=hw```
+
+## Cleaning the Workspace
+To prevent caching issues or to free up disk space, use the provided clean targets:
+* `make clean`: Removes intermediate object files, logs (.log, .jou), and host executables.
+* `make cleanall`: Completely wipes all generated hardware packages, IP caches, and heavy .xclbin / .xo bitstreams.
 
 ## Working examples
 * hw/example_kernel & sw/example_host: Simple adder example
 
 ## Notes
-* Developed in Vitis 2023.2, tested on Alveo U50
+* Maintained by `Se-Min Lim`
+* Developed in Vitis 2025.2, tested on Alveo U50
