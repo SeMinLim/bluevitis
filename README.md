@@ -9,7 +9,9 @@
 
 ## Prerequisites & Dependencies
 1. blueLibrary (Required)
+ 
    `blueVitis` relies heavily on custom hardware IP blocks provided by [blueLibrary](https://github.com/SeMinLim/bluelibrary)..
+
    By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
 
 ## Environment Setup
