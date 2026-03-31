@@ -1,6 +1,7 @@
 # blueVitis
-* Another Boilerplate codebase for AMD Alveo FPGA kernel development via Bluespec System Verilog (BSV).
-* blueVitis originated from "[bluespec-vitis-core](https://github.com/sangwoojun/bluespec-vitis-core)," which is the very first boilerplate codebase developed by my esteemed advisor, Sang-Woo Jun. 
+**An Advanced, High-Performance Boilerplate Codebase for AMD Alveo FPGA Kernel Development using Bluespec SystemVerilog (BSV).**
+
+`blueVitis` originated from the foundational work, [`bluespec-vitis-core`](https://github.com/sangwoojun/bluespec-vitis-core), developed by my esteemed advisor, Prof. Sang-Woo Jun. 
 
 ## File structure
 * hw/
@@ -9,6 +10,11 @@
 ## Clone bluelibrary
 * blueVitis depends on the library, [blueLibrary](https://github.com/SeMinLim/bluelibrary).
 * By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
+
+## Environment Setup
+* **Operating System:** Ubuntu 24.04.4 LTS & 6.8.0-48-generic Kernel
+* **Framework:** AMD Vitis 2025.02 & Xilinx Runtime (XRT)
+* **Compiler:** Bluespec System Verilog (BSC)
 
 ## How to build
 * Building and packaging kernel, xclbin, and hw: cd to hw/, run `make`
