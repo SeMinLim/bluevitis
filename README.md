@@ -6,7 +6,9 @@
 ## File structure
 * hw/
 
-  All custom hardware logic files and configurations for a specific kernel running on AMD FPGA.
+  All custom hardware logic files and configurations for a specific kernel running are in a certain kernel folder.
+
+  Recommend copying one of the kernel folders and customize it
 * sw/
 
 ## Prerequisites & Dependencies
