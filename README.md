@@ -7,9 +7,11 @@
 * hw/
 * sw/
 
-## Clone bluelibrary
-* blueVitis depends on the library, [blueLibrary](https://github.com/SeMinLim/bluelibrary).
-* By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
+## Prerequisites & Dependencies
+1. blueLibrary (Required)
+`blueVitis` relies heavily on custom hardware IP blocks provided by [blueLibrary](https://github.com/SeMinLim/bluelibrary)..
+
+ By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
 
 ## Environment Setup
 * **Operating System:** Ubuntu 24.04.4 LTS & 6.8.0-48-generic Kernel
