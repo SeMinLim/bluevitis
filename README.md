@@ -1,7 +1,7 @@
 # blueVitis
 * An Advanced, High-Performance Boilerplate Codebase for AMD FPGA Kernel Development using Bluespec SystemVerilog (BSV).
 
-* blueVitis originated from the foundational work, [`bluespec-vitis-core`](https://github.com/sangwoojun/bluespec-vitis-core), developed by my esteemed advisor, Prof. Sang-Woo Jun. 
+* `blueVitis` originated from the foundational work, [`bluespec-vitis-core`](https://github.com/sangwoojun/bluespec-vitis-core), developed by my esteemed advisor, Prof. Sang-Woo Jun. 
 
 ## File structure
 * hw/
@@ -12,19 +12,20 @@
 
 ## Prerequisites & Dependencies
 * blueLibrary (Required)
-  * blueVitis relies heavily on custom hardware IP blocks provided by [`blueLibrary`](https://github.com/SeMinLim/bluelibrary).
-  * By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
+  * `blueVitis` relies heavily on custom hardware IP blocks provided by [`blueLibrary`](https://github.com/SeMinLim/bluelibrary).
+  * By default, blueLibrary must be cloned at the same level as `blueVitis` (e.g., ~/bluevitis and ~/bluelibrary).
 * Environment Setup
   * Operating System: Ubuntu 24.04.4 LTS & 6.8.0-48-generic Kernel 
   * Framework: AMD Vitis 2025.02 & Xilinx Runtime (XRT)
   * Compiler: Bluespec System Verilog (BSC)
 
 ## How to build
-blueVitis features a fully automated, one-touch Makefile system. A single command handles BSV-to-Verilog compilation, Vivado IP packaging, Vitis .xclbin linking, and Host C++ compilation.
+`blueVitis` features a fully automated, one-touch Makefile system. A single command handles BSV-to-Verilog compilation, Vivado IP packaging, Vitis .xclbin linking, and Host C++ compilation.
 * Hardware Emulation (Fast Logic Verification)
-* To verify your BSV logic and Host C++ integration without waiting for the lengthy physical synthesis process:
-* ```make all TARGET=hw_emu```
-* Using a different kernel: `make KERNEL=sort_kernel`
+  * To verify your BSV logic and Host C++ integration without waiting for the lengthy physical synthesis process:
+  * ```make all TARGET=hw_emu```
+* Actual Hardware Synthesis (Bitstream Generation)
+* To synthesize the final .xclbin for the physical Alveo U50 FPGA:
 * Building kernel to generate .xo: cd to the kernel directory, run `make`
 * Building software: cd to sw/, run `make`
 
