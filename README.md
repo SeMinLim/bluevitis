@@ -1,13 +1,14 @@
 # blueVitis
-**An Advanced, High-Performance Boilerplate Codebase for AMD FPGA Kernel Development using Bluespec SystemVerilog (BSV).**
+* An Advanced, High-Performance Boilerplate Codebase for AMD FPGA Kernel Development using Bluespec SystemVerilog (BSV).
 
-> `blueVitis` originated from the foundational work, [`bluespec-vitis-core`](https://github.com/sangwoojun/bluespec-vitis-core), developed by my esteemed advisor, Prof. Sang-Woo Jun. 
+* blueVitis originated from the foundational work, [`bluespec-vitis-core`](https://github.com/sangwoojun/bluespec-vitis-core), developed by my esteemed advisor, Prof. Sang-Woo Jun. 
 
 ## File structure
 * hw/
   * All custom hardware logic files and configurations for a specific kernel running are in a certain kernel folder.
   * Recommend copying one of the kernel folders and customize it!
 * sw/
+  * Customized C++ file that manages and configures all operations between the host machine and the FPGA.
 
 ## Prerequisites & Dependencies
 1. blueLibrary (Required)
