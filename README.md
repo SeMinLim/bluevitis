@@ -40,7 +40,7 @@ To prevent caching issues or to free up disk space, use the provided clean targe
 * `make cleanall`: Completely wipes all generated hardware packages, IP caches, and heavy .xclbin / .xo bitstreams.
 
 ## Working examples
-* `xbutil configure --device [your BDF] --host-mem --size 1G enable` to activate host memory, doing one time is enough after rebooting
+`xbutil configure --device [your BDF] --host-mem --size 1G enable` to activate host memory, doing one time is enough after rebooting
 * hw/kernel_example_add_hbm & sw/host_example_add_hbm: simple adder example that uses HBM connection
 * hw/kernel_example_add_host & sw/host_example_add_host: simple adder example that uses direct host connection and URAM
 
