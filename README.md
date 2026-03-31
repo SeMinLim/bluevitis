@@ -12,15 +12,16 @@
 
 ## Prerequisites & Dependencies
 * blueLibrary (Required)
-  * `blueVitis` relies heavily on custom hardware IP blocks provided by [blueLibrary](https://github.com/SeMinLim/bluelibrary).
+  * blueVitis relies heavily on custom hardware IP blocks provided by [`blueLibrary`](https://github.com/SeMinLim/bluelibrary).
   * By default, blueLibrary must be cloned at the same level as blueVitis (e.g., ~/bluevitis and ~/bluelibrary).
 * Environment Setup
-  * **Operating System:** Ubuntu 24.04.4 LTS & 6.8.0-48-generic Kernel 
-  * **Framework:** AMD Vitis 2025.02 & Xilinx Runtime (XRT)
-  * **Compiler:** Bluespec System Verilog (BSC)
+  * Operating System: Ubuntu 24.04.4 LTS & 6.8.0-48-generic Kernel 
+  * Framework: AMD Vitis 2025.02 & Xilinx Runtime (XRT)
+  * Compiler: Bluespec System Verilog (BSC)
 
 ## How to build
-* Building and packaging kernel, xclbin, and hw: cd to hw/, run `make`
+blueVitis features a fully automated, one-touch `Makefile` system. A single command handles BSV-to-Verilog compilation, Vivado IP packaging, Vitis .xclbin linking, and Host C++ compilation.
+* Hardware Emulation (Fast Logic Verification)
 * Using a different kernel: `make KERNEL=sort_kernel`
 * Building kernel to generate .xo: cd to the kernel directory, run `make`
 * Building software: cd to sw/, run `make`
