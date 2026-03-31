@@ -71,9 +71,9 @@ module mkKernelMain(KernelMainIfc);
 	//------------------------------------------------------------------------------------
 	// [URAM]
 	//------------------------------------------------------------------------------------
-	BRAM_Configure cfg = defaultValue;
-	BRAM2Port#(Bit#(10), Bit#(512)) uramX <- mkBRAM2Server(cfg);
-	BRAM2Port#(Bit#(10), Bit#(512)) uramY <- mkBRAM2Server(cfg);
+	URAM_Configure cfg = defaultValue;
+	URAM2Port#(Bit#(10), Bit#(512)) uramX <- mkURAM2Server(cfg);
+	URAM2Port#(Bit#(10), Bit#(512)) uramY <- mkURAM2Server(cfg);
 	//------------------------------------------------------------------------------------
 	// [System Start]
 	//------------------------------------------------------------------------------------
@@ -117,7 +117,7 @@ module mkKernelMain(KernelMainIfc);
 		readWordQs[0].deq;
 		let data = readWordQs[0].first;
 	
-		uramX.portA.request.put(BRAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_X, datain:data});
+		uramX.portA.request.put(URAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_X, datain:data});
 		
 		if ( readDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
 			uramWriteAddr_X <= 0;
@@ -136,7 +136,7 @@ module mkKernelMain(KernelMainIfc);
 	Reg#(Bit#(32)) reqReadUramCnt_X <- mkReg(0);
 	Reg#(Bit#(10)) uramReadAddr_X <- mkReg(0);
 	rule reqReadUramX( reqReadUramOn_X );
-		uramX.portB.request.put(BRAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_X, datain:?});
+		uramX.portB.request.put(URAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_X, datain:?});
 
 		if ( reqReadUramCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
 			uramReadAddr_X <= 0;
@@ -191,7 +191,7 @@ module mkKernelMain(KernelMainIfc);
 		readWordQs[1].deq;
 		let data = readWordQs[1].first;
 	
-		uramY.portA.request.put(BRAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_Y, datain:data});
+		uramY.portA.request.put(URAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_Y, datain:data});
 		
 		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
 			uramWriteAddr_Y <= 0;
@@ -208,7 +208,7 @@ module mkKernelMain(KernelMainIfc);
 	Reg#(Bit#(32)) reqReadUramCnt_Y <- mkReg(0);
 	Reg#(Bit#(10)) uramReadAddr_Y <- mkReg(0);
 	rule reqReadUramY( reqReadUramOn_Y );
-		uramY.portB.request.put(BRAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_Y, datain:?});
+		uramY.portB.request.put(URAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_Y, datain:?});
 
 		if ( reqReadUramCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
 			uramReadAddr_Y <= 0;
