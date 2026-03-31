@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
         // Fill URAM blocks with 2 512-bit data
 	bo0_map[0] = 1;
 	bo1_map[0] = 2;
-
+	
 	// Synchronize host and global memory buffer
 	cout << "[STEP 3] Synchronize input buffer data to device global memory" << endl;
 	fflush( stdout );
@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
         fflush( stdout );
         boOut.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
+	printf( "%d\n", bo1_map[RESULTADDRESS] );
 	// Verification
 	if ( bo1_map[RESULTADDRESS] == 3 ) {
 		cout << "TEST PASSED" << endl;

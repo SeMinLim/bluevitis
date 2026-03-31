@@ -27,8 +27,7 @@ build: $(BUILD_DIR)/kernel.xclbin
 #----------------------------------------------------------------------------------------
 # 5. Host C++ Build
 #----------------------------------------------------------------------------------------
-host: $(HOSTDIR)/obj/main
-$(HOSTDIR)/obj/main:
+host:
 	$(MAKE) -C $(HOSTDIR) CXXFLAGS="$(CXXFLAGS)"
 #----------------------------------------------------------------------------------------
 # 6. Kernel Hardware Build (BSV -> Verilog -> XO -> XCLBIN)
@@ -38,7 +37,7 @@ $(OBJ_DIR)/verilog/.done: $(wildcard *.bsv) $(wildcard *.v)
 	mkdir -p $(OBJ_DIR)/verilog
 	bsc $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -p +:$(BLIB_DIR)/bsv -verilog -u -g kernel KernelTop.bsv
 	cd $(OBJ_DIR)/verilog/ && bash ../../scripts/verilogcopy.sh
-	cp *.v $(OBJ_DIR)/verilog/ 2>/dev/null || true
+	cp *.v $(OBJ_DIR)/verilog/
 	cp $(BLIB_DIR)/verilog/*.v $(OBJ_DIR)/verilog/ 
 	@touch $@
 $(BUILD_DIR)/kernel.xo: ./kernel.xml ./scripts/package_kernel.tcl ./scripts/gen_xo.tcl $(OBJ_DIR)/verilog/.done
@@ -65,7 +64,7 @@ package: host build emconfig
 	cp $(HOSTDIR)/obj/main $(BUILD_DIR)/hw_package/
 	cp $(BUILD_DIR)/kernel.xclbin $(BUILD_DIR)/hw_package/
 	cp $(BUILD_DIR)/emconfig.json $(BUILD_DIR)/hw_package/
-	cp xrt.ini $(BUILD_DIR)/hw_package/ 2>/dev/null || true
+	cp xrt.ini $(BUILD_DIR)/hw_package/
 	cd $(BUILD_DIR) && tar czvf hw_package.tgz hw_package/
 #----------------------------------------------------------------------------------------
 # 9. Run Application (Auto-handles Emulation Mode)
