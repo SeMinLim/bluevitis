@@ -25,9 +25,11 @@
   * To verify your BSV logic and Host C++ integration without waiting for the lengthy physical synthesis process:
   * ```make all TARGET=hw_emu```
 * Actual Hardware Synthesis (Bitstream Generation)
-* To synthesize the final .xclbin for the physical Alveo U50 FPGA:
-* Building kernel to generate .xo: cd to the kernel directory, run `make`
-* Building software: cd to sw/, run `make`
+  * To synthesize the final `.xclbin` for the physical Alveo U50 FPGA:
+  * ```make all TARGET=hw```
+* Standalone Host Compilation (Optional)
+  * If you only modified the C++ host code (`sw/host_example/main.cpp`) and want to recompile the software without touching the hardware bitstream:
+  * ```make host```
 
 ## Working examples
 * hw/example_kernel & sw/example_host: Simple adder example
