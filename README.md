@@ -40,8 +40,9 @@ To prevent caching issues or to free up disk space, use the provided clean targe
 * `make cleanall`: Completely wipes all generated hardware packages, IP caches, and heavy .xclbin / .xo bitstreams.
 
 ## Working examples
-* hw/example_kernel & sw/example_host: Simple adder example
+* hw/kernel_example_add_hbm & sw/host_example_add_hbm: simple adder example that uses HBM connection
+* hw/kernel_example_add_host & sw/host_example_add_host: simple adder example that uses direct host connection and URAM
 
 ## Notes
-* Maintained by `Se-Min Lim`
+* Maintained by Se-Min Lim
 * Developed in Vitis 2025.2, tested on Alveo U50
