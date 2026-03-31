@@ -23,13 +23,14 @@
 `blueVitis` features a fully automated, one-touch Makefile system. A single command handles BSV-to-Verilog compilation, Vivado IP packaging, Vitis .xclbin linking, and Host C++ compilation.
 * Hardware Emulation (Fast Logic Verification)
   * To verify your BSV logic and Host C++ integration without waiting for the lengthy physical synthesis process:
-  * ```make all TARGET=hw_emu```
+  * ```make all TARGET=hw_emu && make run TARGET=hw_emu```
 * Actual Hardware Synthesis (Bitstream Generation)
   * To synthesize the final `.xclbin` for the physical Alveo U50 FPGA:
   * ```make all TARGET=hw```
 * Standalone Host Compilation (Optional)
   * If you only modified the C++ host code (`sw/host_example/main.cpp`) and want to recompile the software without touching the hardware bitstream:
   * ```make host```
+* Running on the FPGA
 
 ## Working examples
 * hw/example_kernel & sw/example_host: Simple adder example
