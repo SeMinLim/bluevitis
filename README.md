@@ -20,8 +20,10 @@
   * Compiler: Bluespec System Verilog (BSC)
 
 ## How to build
-blueVitis features a fully automated, one-touch `Makefile` system. A single command handles BSV-to-Verilog compilation, Vivado IP packaging, Vitis .xclbin linking, and Host C++ compilation.
+blueVitis features a fully automated, one-touch Makefile system. A single command handles BSV-to-Verilog compilation, Vivado IP packaging, Vitis .xclbin linking, and Host C++ compilation.
 * Hardware Emulation (Fast Logic Verification)
+* To verify your BSV logic and Host C++ integration without waiting for the lengthy physical synthesis process:
+* ```make all TARGET=hw_emu```
 * Using a different kernel: `make KERNEL=sort_kernel`
 * Building kernel to generate .xo: cd to the kernel directory, run `make`
 * Building software: cd to sw/, run `make`
