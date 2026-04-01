@@ -43,6 +43,7 @@ To prevent caching issues or to free up disk space, use the provided clean targe
 `xbutil configure --device [your BDF] --host-mem --size 1G enable` to activate host memory, doing one time is enough after rebooting
 * hw/kernel_example_add_hbm & sw/host_example_add_hbm: simple adder example that uses HBM connection
 * hw/kernel_example_add_host & sw/host_example_add_host: simple adder example that uses direct host connection and URAM
+* hw/kernel_example_add_plram_uram & sw/host_example_add_plram_uram: simple adder example that uses URAM-mapped PLRAM connection
 
 
 ## Notes
