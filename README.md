@@ -44,6 +44,7 @@ To prevent caching issues or to free up disk space, use the provided clean targe
 * hw/kernel_example_add_hbm & sw/host_example_add_hbm: simple adder example that uses HBM connection
 * hw/kernel_example_add_host & sw/host_example_add_host: simple adder example that uses direct host connection and URAM
 * hw/kernel_example_add_plram_uram & sw/host_example_add_plram_uram: simple adder example that uses URAM-mapped PLRAM connection
+* hw/kernel_example_add_plram_bram & sw/host_example_add_plram_bram: simple adder example that uses BRAM-mapped PLRAM connection
 
 
 ## Notes
