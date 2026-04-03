@@ -1,83 +1,131 @@
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <algorithm>
-#include <cstdio>
-#include <cstdlib>
-#include <cstdint>
-using namespace std;
 
 
-// XRT includes
 #include "xrt/xrt_bo.h"
 #include <experimental/xrt_xclbin.h>
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
 
-#define DEVICE_ID 0
-#define DATA_SIZE 65536
-#define RESULTADDRESS 0
+using namespace std;
+namespace {
+	constexpr unsigned int kDeviceId = 0;
+	constexpr size_t kBufferBytes = 4096;
+	constexpr uint32_t kMagic = 0x53524C5A; // '0x53=S, 0x52=R, 0x4C=L, 0x5A=Z'
+
+	string hex32(uint32_t x) {
+		ostringstream oss;
+		oss << "0x" << hex << setw(8) << setfill('0') << x;
+		return oss.str();
+	}
+
+	string hex64(uint64_t x) {
+		ostringstream oss;
+		oss << "0x" << hex << setw(16) << setfill('0') << x;
+		return oss.str();
+	}
+
+	bool test_bit(uint32_t mask, int bit) {
+		return ((mask >> bit) & 1u) != 0;
+	}
+} // namespace
 
 
 int main(int argc, char** argv) {
-	if ( argc != 2 ) {
-		cout << "Usage: " << argv[0] << " <XCLBIN File Path>" << endl;
+	if (argc != 2) {
+		cerr << "Usage: " << argv[0] << " <XCLBIN file>\n";
 		return EXIT_FAILURE;
 	}
 
-	// Load XCLBIN
-	cout << "[Xilinx Alveo U50]" << endl;
-	fflush( stdout );
-	string xclbin_file = argv[1];
-	xrt::device device = xrt::device(DEVICE_ID);
-	xrt::uuid xclbin_uuid = device.load_xclbin(xclbin_file);
+	const string xclbin_file = argv[1];
 
-	// Create kernel object
-	cout << "[STEP 1] Create Kernel" << endl;
-	fflush( stdout );
-	auto krnl = xrt::kernel(device, xclbin_uuid, "kernel:{kernel_1}");
+	cout << "[Serializer self-test demo]" << endl;
+	xrt::device device{kDeviceId};
+	xrt::uuid uuid = device.load_xclbin(xclbin_file);
+	auto krnl = xrt::kernel(device, uuid, "kernel:{kernel_1}");
 
-	// Allocate buffer in global memory
-	cout << "[STEP 2] Allocate Buffer in PLRAM (configured as URAM)" << endl;
-	fflush( stdout );
-	auto boIn  = xrt::bo(device, (size_t)DATA_SIZE, krnl.group_id(1));
-	auto boOut = xrt::bo(device, (size_t)DATA_SIZE, krnl.group_id(2));
+	// kernel.xml still defines two pointer arguments: mem and file.
+	auto boIn  = xrt::bo(device, kBufferBytes, krnl.group_id(1));
+	auto boOut = xrt::bo(device, kBufferBytes, krnl.group_id(2));
 
-	// Map the contents of the buffer object into host memory
-	auto bo0_map = boIn.map<int*>();
-	auto bo1_map = boOut.map<int*>();
-	fill(bo0_map, bo0_map + ((size_t)DATA_SIZE / 4), 0);
-	fill(bo1_map, bo1_map + ((size_t)DATA_SIZE / 4), 0);
+	auto in  = boIn.map<uint32_t*>();
+	auto out = boOut.map<uint32_t*>();
+	fill(in,  in  + kBufferBytes / sizeof(uint32_t), 0u);
+	fill(out, out + kBufferBytes / sizeof(uint32_t), 0u);
 
-        // Fill PLRAM-backed buffers with 2 512-bit data
-	bo0_map[0] = 1;
-	bo1_map[0] = 2;
-	
-	// Synchronize host and global memory buffer
-	cout << "[STEP 3] Synchronize input buffer data to device global memory" << endl;
-	fflush( stdout );
 	boIn.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 	boOut.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-	// Execute kernel
-	cout << "[STEP 4] Execution of the kernel" << endl;
-        fflush( stdout );
-        auto run = krnl((size_t)DATA_SIZE, boIn, boOut);
-        run.wait();
-        
-        // Get the output
-        cout << "[STEP 5] Get the output data from the device" << endl;
-        fflush( stdout );
-        boOut.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+	auto run = krnl(0u, boIn, boOut);
+	run.wait();
+	boOut.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
-	printf( "%d\n", bo1_map[RESULTADDRESS] );
-	// Verification
-	if ( bo1_map[RESULTADDRESS] == 3 ) {
-		cout << "TEST PASSED" << endl;
-	} else {
-		cout << "TEST FAILED" << endl;
+	const uint32_t magic    = out[0];
+	const uint32_t status   = out[1];
+	const uint32_t passMask = out[2];
+	const uint32_t cycles   = out[3];
+	const uint32_t serObs   = out[4];
+	const uint32_t deserObs = out[5];
+	const uint32_t repObs   = out[6];
+	const uint32_t lastObs  = out[7];
+	const uint32_t skipObs  = out[8];
+	const uint64_t shiftObs = (static_cast<uint64_t>(out[10]) << 32) | out[9];
+	const uint32_t freeObs  = out[11];
+
+	cout << "magic      : " << hex32(magic) << '\n';
+	cout << "status     : " << hex32(status) << "  (3 means PASS)\n";
+	cout << "pass mask  : " << hex32(passMask) << '\n';
+	cout << dec << "cycles     : " << cycles << "\n\n";
+
+	struct Check32 {
+		const char* name;
+		uint32_t observed;
+		uint32_t expected;
+		int bit;
+	};
+
+	const array<Check32, 6> checks32{{
+		{"mkSerializer",         serObs,   0x11223344u, 0},
+		{"mkStreamReplicate",    repObs,   0x00A6A6A6u, 1},
+		{"mkStreamSerializeLast",lastObs,  0x00000001u, 2},
+		{"mkDeSerializer",       deserObs, 0x11223344u, 3},
+		{"mkStreamSkip",         skipObs,  0x0000A2B2u, 4},
+		{"mkSerializerFreeform", freeObs,  0x2B79536Cu, 6},
+	}};
+
+	for (const auto& c : checks32) {
+		cout << left << setw(24) << c.name
+		     << " observed=" << hex32(c.observed)
+		     << " expected=" << hex32(c.expected)
+		     << "  bit=" << c.bit
+		     << "  " << ((c.observed == c.expected && test_bit(passMask, c.bit)) ? "OK" : "FAIL")
+		     << '\n';
 	}
 
-	return 0;
-}
+	cout << left << setw(24) << "mkPipelineShiftRight"
+	     << " observed=" << hex64(shiftObs)
+	     << " expected=" << hex64(0x000FEDCBA9876543ULL)
+	     << "  bit=5"
+	     << "  " << ((shiftObs == 0x000FEDCBA9876543ULL && test_bit(passMask, 5)) ? "OK" : "FAIL")
+	     << '\n';
 
+	if (magic != kMagic) {
+		cout << "\nWARNING: unexpected magic value. The kernel may not be the serializer self-test build.\n";
+	}
+
+	if (status == 3u && magic == kMagic) {
+		cout << "\nTEST PASSED\n";
+		return EXIT_SUCCESS;
+	}
+
+	cout << "\nTEST FAILED\n";
+
+	return EXIT_FAILURE;
+}

@@ -1,33 +1,68 @@
 import FIFO::*;
-import FIFOF::*;
 import Vector::*;
-
-import BRAM::*;
-import BRAMFIFO::*;
+import Serializer::*;
 
 
-typedef 1 DataCntTotal512b_X;
-typedef 1 DataCntTotal512b_Y;
-
-typedef 0 MemPortAddrStart_0;
-typedef 0 MemPortAddrStart_1;
 typedef 0 ResultAddrStart;
-
 typedef 2 MemPortCnt;
+typedef enum {
+	ST_IDLE,
+	ST_SER_PUT,
+	ST_SER_GET,
+	ST_DESER_GET,
+	ST_REP_PUT,
+	ST_REP_GET,
+	ST_LAST_PUT,
+	ST_LAST_GET,
+	ST_SKIP_FEED0,
+	ST_SKIP_GET0,
+	ST_SKIP_FEED1,
+	ST_SKIP_GET1,
+	ST_SKIP_TAIL,
+	ST_SHIFT_PUT,
+	ST_SHIFT_GET,
+	ST_FREE_RUN,
+	ST_PACK,
+	ST_WRITE_REQ,
+	ST_WRITE_WORD,
+	ST_DONE
+} TestState deriving (Bits, Eq);
 typedef struct {
-	Bit#(64) addr;
-	Bit#(32) bytes;
-} MemPortReq deriving (Eq,Bits);
+   Bit#(64) addr;
+   Bit#(32) bytes;
+} MemPortReq deriving (Eq, Bits);
+
+
+
+function Bit#(8) skipInput(UInt#(4) idx);
+	case (idx)
+		0:       return 8'hA0;
+		1:       return 8'hA1;
+		2:       return 8'hA2;
+		3:       return 8'hA3;
+		4:       return 8'hB0;
+		5:       return 8'hB1;
+		6:       return 8'hB2;
+		7:       return 8'hB3;
+		default: return 8'h00;
+	endcase
+endfunction
+function Bit#(10) freeInput(UInt#(3) idx);
+	case (idx)
+		0:       return 10'h3AB;
+		1:       return 10'h155;
+		2:       return 10'h2C3;
+		default: return 10'h000;
+	endcase
+endfunction
 
 
 interface MemPortIfc;
 	method ActionValue#(MemPortReq) readReq;
 	method ActionValue#(MemPortReq) writeReq;
-	method ActionValue#(Bit#(512)) writeWord;
+	method ActionValue#(Bit#(512))  writeWord;
 	method Action readWord(Bit#(512) word);
 endinterface
-
-
 interface KernelMainIfc;
 	method Action start(Bit#(32) param);
 	method ActionValue#(Bool) done;
@@ -37,178 +72,311 @@ module mkKernelMain(KernelMainIfc);
 	FIFO#(Bool) startQ <- mkFIFO;
 	FIFO#(Bool) doneQ  <- mkFIFO;
 
-	FIFO#(Bit#(512)) dataQ_X <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) dataQ_Y <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) resultQ <- mkSizedBRAMFIFO(8);
-
 	Reg#(Bool) started <- mkReg(False);
-	Reg#(Bool) reqReadDataOn_X <- mkReg(False);
-	Reg#(Bool) readDataOn_X <- mkReg(False);
-	Reg#(Bool) reqReadDataOn_Y <- mkReg(False);
-	Reg#(Bool) readDataOn_Y <- mkReg(False);
-	Reg#(Bool) reqWriteResultOn <- mkReg(False);
-	Reg#(Bool) writeResultOn <- mkReg(False);
-	//------------------------------------------------------------------------------------
-	// [Cycle Counter]
-	//------------------------------------------------------------------------------------
+	Reg#(TestState) state <- mkReg(ST_IDLE);
+
+	Vector#(MemPortCnt, FIFO#(MemPortReq)) readReqQs   <- replicateM(mkFIFO);
+	Vector#(MemPortCnt, FIFO#(MemPortReq)) writeReqQs  <- replicateM(mkFIFO);
+	Vector#(MemPortCnt, FIFO#(Bit#(512)))  writeWordQs <- replicateM(mkFIFO);
+	Vector#(MemPortCnt, FIFO#(Bit#(512)))  readWordQs  <- replicateM(mkFIFO);
+
+	//-----------------------------------------------------------------------------------
+	// passMask Bit Assignment
+	// bit0: mkSerializer,   bit1: mkStreamReplicate, bit2: mkStreamSerializeLast
+	// bit3: mkDeSerializer, bit4: mkStreamSkip,      bit5: mkPipelineShiftRight
+	// bit6: mkSerializerFreeform
+	//-----------------------------------------------------------------------------------
+	SerializerIfc#(32, 4)         ser      <- mkSerializer;
+	DeSerializerIfc#(8, 4)        deser    <- mkDeSerializer;
+	FIFO#(Bit#(8))                rep      <- mkStreamReplicate(3);
+	FIFO#(Bool)                   lastFlag <- mkStreamSerializeLast(4);
+	FIFO#(Bit#(8))                skip     <- mkStreamSkip(4, 2);
+	PipelineShiftIfc#(64, 6)      shifter  <- mkPipelineShiftRight;
+	SerializerFreeformIfc#(10, 6) freeform <- mkSerializerFreeform;
+
+	Reg#(Bit#(7))  passMask  <- mkReg(0);
+	Reg#(UInt#(3)) serCount  <- mkReg(0);
+	Reg#(Bit#(32)) serObs    <- mkReg(0);
+	Reg#(Bit#(32)) deserObs  <- mkReg(0);
+
+	Reg#(UInt#(2)) repCount  <- mkReg(0);
+	Reg#(Bit#(24)) repObs    <- mkReg(0);
+
+	Reg#(UInt#(3)) lastCount <- mkReg(0);
+	Reg#(Bit#(4))  lastObs   <- mkReg(0);
+
+	Reg#(UInt#(4)) skipFeedIdx <- mkReg(0);
+	Reg#(Bit#(16)) skipObs     <- mkReg(0);
+
+	Reg#(Bit#(64)) shiftObs <- mkReg(0);
+
+	Reg#(UInt#(3)) freeInCount  <- mkReg(0);
+	Reg#(UInt#(3)) freeOutCount <- mkReg(0);
+	Reg#(Bit#(30)) freeObs      <- mkReg(0);
+
+	Reg#(Bit#(512)) resultWord <- mkReg(0);
+
 	Reg#(Bit#(32)) cycleCounter <- mkReg(0);
-	Reg#(Bit#(32)) cycleStart <- mkReg(0);
-	Reg#(Bit#(32)) cycleDone <- mkReg(0);
+	Reg#(Bit#(32)) cycleStart   <- mkReg(0);
 	rule incCycle;
 		cycleCounter <= cycleCounter + 1;
 	endrule
-	//------------------------------------------------------------------------------------
-	// [System Start]
-	//------------------------------------------------------------------------------------
-	rule systemStart( !started );
+
+	rule systemStart (!started);
 		startQ.deq;
-		started <= True;
-		reqReadDataOn_X	<= True;
-		reqReadDataOn_Y	<= True;
-		reqWriteResultOn <= True;
+
+		rep.clear;
+		lastFlag.clear;
+		skip.clear;
+
+		started      <= True;
+		state        <= ST_SER_PUT;
+		cycleStart   <= cycleCounter;
+		passMask     <= 0;
+		serCount     <= 0;
+		serObs       <= 0;
+		deserObs     <= 0;
+		repCount     <= 0;
+		repObs       <= 0;
+		lastCount    <= 0;
+		lastObs      <= 0;
+		skipFeedIdx  <= 0;
+		skipObs      <= 0;
+		shiftObs     <= 0;
+		freeInCount  <= 0;
+		freeOutCount <= 0;
+		freeObs      <= 0;
+		resultWord   <= 0;
 	endrule
-	//------------------------------------------------------------------------------------
-	// [Memory Read]
-	//------------------------------------------------------------------------------------
-	Vector#(MemPortCnt, FIFO#(MemPortReq)) readReqQs <- replicateM(mkFIFO);
-	Vector#(MemPortCnt, FIFO#(MemPortReq)) writeReqQs <- replicateM(mkFIFO);
-	Vector#(MemPortCnt, FIFO#(Bit#(512))) writeWordQs <- replicateM(mkFIFO);
-	Vector#(MemPortCnt, FIFO#(Bit#(512))) readWordQs <- replicateM(mkFIFO);
-
-	// Read the example data 'X'		[MEMPORT 0]
-	Reg#(Bit#(32)) reqReadDataCnt_X <- mkReg(0);
-	Reg#(Bit#(64)) memPortAddr_0 <- mkReg(fromInteger(valueOf(MemPortAddrStart_0)));
-	rule reqReadDataX( reqReadDataOn_X );
-		readReqQs[0].enq(MemPortReq{addr:memPortAddr_0, bytes:64});
-
-		if ( reqReadDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			memPortAddr_0 <= 0;
-			reqReadDataCnt_X <= 0;
-			reqReadDataOn_X	<= False;
-		end else begin
-			memPortAddr_0 <= memPortAddr_0 + 64;
-			reqReadDataCnt_X <= reqReadDataCnt_X + 1;
-		end
-
-		readDataOn_X <= True;
+	//-----------------------------------------------------------------------------------
+	// 1) mkSerializer and 2) mkDeSerializer round-trip
+	//-----------------------------------------------------------------------------------
+	rule testSerializerPut (started && state == ST_SER_PUT);
+		ser.put(32'h11223344);
+		state <= ST_SER_GET;
 	endrule
-	Reg#(Bit#(32)) readDataCnt_X <- mkReg(0);
-	rule readDataX( readDataOn_X );
-		readWordQs[0].deq;
-		let data = readWordQs[0].first;
-	
-		dataQ_X.enq(data);
-		
-		if ( readDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			readDataCnt_X <= 0;
-			readDataOn_X <= False;
-			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Reading data X is done!\n", cycleCounter );
+	rule testSerializerGet (started && state == ST_SER_GET);
+		let x <- ser.get;
+		Bit#(32) nextSer = (zeroExtend(x) << 24) | (serObs >> 8);
+
+		serObs <= nextSer;
+		deser.put(x);
+
+		if (serCount == 3) begin
+			if (nextSer == 32'h11223344) passMask <= passMask | 7'b0000001;
+			serCount <= 0;
+			state <= ST_DESER_GET;
 		end else begin
-			readDataCnt_X <= readDataCnt_X + 1;
-		end
-
-		cycleStart <= cycleCounter;
-	endrule
-
-	// Read the example data 'Y'		[MEMPORT 1]
-	Reg#(Bit#(32)) reqReadDataCnt_Y <- mkReg(0);
-	Reg#(Bit#(64)) memPortAddr_1 <- mkReg(fromInteger(valueOf(MemPortAddrStart_1)));
-	rule reqReadDataY( reqReadDataOn_Y );
-		readReqQs[1].enq(MemPortReq{addr:memPortAddr_1, bytes:64});
-
-		if ( reqReadDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			memPortAddr_1 <= 0;
-			reqReadDataCnt_Y <= 0;
-			reqReadDataOn_Y	<= False;
-		end else begin
-			memPortAddr_1 <= memPortAddr_1 + 64;
-			reqReadDataCnt_Y <= reqReadDataCnt_Y + 1;
-		end
-
-		readDataOn_Y <= True;
-	endrule
-	Reg#(Bit#(32)) readDataCnt_Y <- mkReg(0);
-	rule readDataY( readDataOn_Y );
-		readWordQs[1].deq;
-		let data = readWordQs[1].first;
-	
-		dataQ_Y.enq(data);
-		
-		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			readDataCnt_Y <= 0;
-			readDataOn_Y <= False;
-			reqWriteResultOn <= True;
-			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Reading data Y is done!\n", cycleCounter );
-		end else begin
-			readDataCnt_Y <= readDataCnt_Y + 1;
+			serCount <= serCount + 1;
 		end
 	endrule
-	//------------------------------------------------------------------------------------
-	// Example Logic
-	//------------------------------------------------------------------------------------
-	rule example_1;
-		dataQ_X.deq;
-		dataQ_Y.deq;
-		let x = dataQ_X.first;
-		let y = dataQ_Y.first;
+	rule testDeSerializerGet (started && state == ST_DESER_GET);
+		let x <- deser.get;
+		deserObs <= x;
 
-		Bit#(512) r = x + y;
-		
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Running example is done!\n", cycleCounter );
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : %lu\n", r );
+		if (x == 32'h11223344) passMask <= passMask | 7'b0001000;
 
-		resultQ.enq(r);
+		state <= ST_REP_PUT;
 	endrule
-	//------------------------------------------------------------------------------------
-	// [Memory Write] & [System Finish]
-	// Memory Writer is going to use HBM[1] 
-	// 536,870,912 
-	//------------------------------------------------------------------------------------
-	rule reqWriteResult( reqWriteResultOn );
-		writeReqQs[1].enq(MemPortReq{addr:fromInteger(valueOf(ResultAddrStart)), bytes:64});
-		
-		reqWriteResultOn <= False;
-		writeResultOn <= True;
+	//-----------------------------------------------------------------------------------
+	// 3) mkStreamReplicate
+	//-----------------------------------------------------------------------------------
+	rule testReplicatePut (started && state == ST_REP_PUT);
+		rep.enq(8'hA6);
+		state <= ST_REP_GET;
 	endrule
-	rule writeResult( writeResultOn );
-		resultQ.deq;
-		let r = resultQ.first;
-		writeWordQs[1].enq(r);
+	rule testReplicateGet (started && state == ST_REP_GET);
+		let x = rep.first;
+		rep.deq;
 
-		// System Finish
-		writeResultOn <= False;
-		started	<= False;
+		Bit#(24) nextRep = {repObs[15:0], x};
+		repObs <= nextRep;
+
+		if (repCount == 2) begin
+			if (nextRep == 24'hA6A6A6) passMask <= passMask | 7'b0000010;
+			repCount <= 0;
+			state <= ST_LAST_PUT;
+		end else begin
+			repCount <= repCount + 1;
+		end
+	endrule
+	//-----------------------------------------------------------------------------------
+	// 4) mkStreamSerializeLast
+	//-----------------------------------------------------------------------------------
+   	rule testLastPut (started && state == ST_LAST_PUT);
+		lastFlag.enq(True);
+		state <= ST_LAST_GET;
+	endrule
+	rule testLastGet (started && state == ST_LAST_GET);
+		let b = lastFlag.first;
+		lastFlag.deq;
+
+		Bit#(4) nextLast = {lastObs[2:0], pack(b)};
+		lastObs <= nextLast;
+
+		if (lastCount == 3) begin
+			if (nextLast == 4'b0001) passMask <= passMask | 7'b0000100;
+			lastCount <= 0;
+			state <= ST_SKIP_FEED0;
+		end else begin
+			lastCount <= lastCount + 1;
+		end
+	endrule
+	//-----------------------------------------------------------------------------------
+	// 5) mkStreamSkip
+	//-----------------------------------------------------------------------------------
+	rule testSkipFeed0 (started && state == ST_SKIP_FEED0);
+		skip.enq(skipInput(skipFeedIdx));
+		
+		if (skipFeedIdx == 2) begin
+			skipFeedIdx <= 3;
+			state <= ST_SKIP_GET0;
+		end else begin
+			skipFeedIdx <= skipFeedIdx + 1;
+		end
+	endrule
+	rule testSkipGet0 (started && state == ST_SKIP_GET0);
+		let x = skip.first;
+		skip.deq;
+
+		skipObs <= {8'h00, x};
+		state <= ST_SKIP_FEED1;
+	endrule
+	rule testSkipFeed1 (started && state == ST_SKIP_FEED1);
+		skip.enq(skipInput(skipFeedIdx));
+		
+		if (skipFeedIdx == 6) begin
+			skipFeedIdx <= 7;
+			state <= ST_SKIP_GET1;
+		end else begin
+			skipFeedIdx <= skipFeedIdx + 1;
+		end
+	endrule
+	rule testSkipGet1 (started && state == ST_SKIP_GET1);
+		let x = skip.first;
+		skip.deq;
+
+		Bit#(16) nextSkip = {skipObs[7:0], x};
+		skipObs <= nextSkip;
+
+		if (nextSkip == 16'hA2B2) passMask <= passMask | 7'b0010000;
+		state <= ST_SKIP_TAIL;
+	endrule
+	rule testSkipTail (started && state == ST_SKIP_TAIL);
+	// Complete the frame so the internal index returns to 0 before the next run.
+		skip.enq(skipInput(7));
+		state <= ST_SHIFT_PUT;
+	endrule
+	//-----------------------------------------------------------------------------------
+	// 6) mkPipelineShiftRight
+   	//-----------------------------------------------------------------------------------
+	rule testShiftPut (started && state == ST_SHIFT_PUT);
+		shifter.put(64'hFEDCBA9876543210, 6'd12);
+		state <= ST_SHIFT_GET;
+	endrule
+	rule testShiftGet (started && state == ST_SHIFT_GET);
+		let x <- shifter.get;
+		shiftObs <= x;
+
+		if (x == 64'h000FEDCBA9876543) passMask <= passMask | 7'b0100000;
+		state <= ST_FREE_RUN;
+	endrule
+	//-----------------------------------------------------------------------------------
+	// 7) mkSerializerFreeform (3 x 10-bit -> 5 x 6-bit).
+	// Expected outputs: 2B, 1E, 15, 0D, 2C
+	// Packed observation: 0x2B79536C
+	//-----------------------------------------------------------------------------------
+	rule testFreeformFeed (started && state == ST_FREE_RUN && freeInCount < 3);
+		freeform.put(freeInput(freeInCount));
+		freeInCount <= freeInCount + 1;
+	endrule
+	rule testFreeformGet (started && state == ST_FREE_RUN && freeOutCount < 5);
+		let x <- freeform.get;
+		Bit#(30) nextFree = {freeObs[23:0], x};
+		freeObs <= nextFree;
+
+		if (freeOutCount == 4) begin
+			if (nextFree == 30'h2B79536C) passMask <= passMask | 7'b1000000;
+			state <= ST_PACK;
+		end else begin
+			freeOutCount <= freeOutCount + 1;
+		end
+	endrule
+	//-----------------------------------------------------------------------------------
+	// Results
+	// 16 x 32-bit lanes in one 512-bit result word.
+	// lane  0: magic,                     lane  1: status (3 means PASS),      lane  2: passMask
+	// lane  3: elapsed cycles,            lane  4: serializer observation,     lane  5: deserializer observation
+	// lane  6: replicate observation,     lane  7: serialize-last observation, lane  8: skip observation
+	// lane  9: shift observation low 32b, lane 10: shift observation high 32b, lane 11: freeform observation
+	// lane 12-15: zero
+	//-----------------------------------------------------------------------------------
+	rule packResults (started && state == ST_PACK);
+		Bit#(32) magic    = 32'h53524C5A; // 'SRLZ'
+		Bit#(32) status   = (passMask == 7'b1111111) ? 32'd3 : (32'hBAD00000 | zeroExtend(passMask));
+		Bit#(32) cycles   = cycleCounter - cycleStart;
+		Bit#(32) passMask32 = zeroExtend(passMask);
+		Bit#(32) repObs32   = zeroExtend(repObs);
+		Bit#(32) lastObs32  = zeroExtend(lastObs);
+		Bit#(32) skipObs32  = zeroExtend(skipObs);
+		Bit#(32) freeObs32  = zeroExtend(freeObs);
+		Bit#(32) shiftLo32  = shiftObs[31:0];
+		Bit#(32) shiftHi32  = shiftObs[63:32];
+
+		resultWord <= { 32'h0, 32'h0, 32'h0, 32'h0,
+			freeObs32, shiftHi32, shiftLo32, skipObs32,
+			lastObs32, repObs32, deserObs, serObs,
+			cycles, passMask32, status, magic };
+		state <= ST_WRITE_REQ;
+	endrule
+
+	rule reqWriteResult (started && state == ST_WRITE_REQ);
+		writeReqQs[1].enq(MemPortReq{addr: fromInteger(valueOf(ResultAddrStart)), bytes: 64});
+		state <= ST_WRITE_WORD;
+	endrule
+	rule writeResult (started && state == ST_WRITE_WORD);
+		writeWordQs[1].enq(resultWord);
+		state <= ST_DONE;
+	endrule
+
+	rule finish (started && state == ST_DONE);
+		started <= False;
+		state <= ST_IDLE;
 		doneQ.enq(True);
 	endrule
-	//------------------------------------------------------------------------------------
-	// Interface
-	//------------------------------------------------------------------------------------
+
 	Vector#(MemPortCnt, MemPortIfc) mem_;
 	for (Integer i = 0; i < valueOf(MemPortCnt); i = i + 1) begin
 		mem_[i] = interface MemPortIfc;
 			method ActionValue#(MemPortReq) readReq;
+				let r = readReqQs[i].first;
 				readReqQs[i].deq;
-				return readReqQs[i].first;
+				return r;
 			endmethod
 			method ActionValue#(MemPortReq) writeReq;
+				let r = writeReqQs[i].first;
 				writeReqQs[i].deq;
-				return writeReqQs[i].first;
+				return r;
 			endmethod
 			method ActionValue#(Bit#(512)) writeWord;
+				let w = writeWordQs[i].first;
 				writeWordQs[i].deq;
-				return writeWordQs[i].first;
+				return w;
 			endmethod
 			method Action readWord(Bit#(512) word);
 				readWordQs[i].enq(word);
 			endmethod
 		endinterface;
 	end
-	method Action start(Bit#(32) param) if ( started == False );
+
+
+	method Action start(Bit#(32) param) if (!started);
 		startQ.enq(True);
 	endmethod
 	method ActionValue#(Bool) done;
+		let d = doneQ.first;
 		doneQ.deq;
-		return doneQ.first;
+		return d;
 	endmethod
 	interface mem = mem_;
 endmodule
