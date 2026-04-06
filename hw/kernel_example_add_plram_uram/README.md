@@ -1,287 +1,256 @@
-# Serializer Package and Self-Test Example
+# Serializer Package Self-Test with Host Input over PLRAM/URAM
 
-This repository includes a `Serializer` package and a compact kernel-level self-test example for validating all of its main modules on hardware.
+This example validates the `Serializer.bsv` package inside the `kernel_example_add_plram_uram` design while also checking the **host -> input buffer -> PLRAM/URAM-mapped memory path -> kernel** read path.
 
-The example is designed to run inside `hw/kernel_example_add_plram_uram` by replacing `KernelMain.bsv` and the host `main.cpp`. The kernel executes a sequence of functional checks, packs the observed results into one 512-bit word, and writes that word back to host memory. The host program reads the result word, decodes it, and prints a per-module pass/fail summary.
+Unlike the earlier self-test that generated all stimulus inside the kernel, this version uses a host-provided 32-bit word as the test vector for `mkSerializer` and `mkDeSerializer`.
+
+## What this example tests
+
+This example covers two things at once:
+
+1. **Serializer package functionality**
+   - `mkSerializer`
+   - `mkDeSerializer`
+   - `mkStreamReplicate`
+   - `mkStreamSerializeLast`
+   - `mkStreamSkip`
+   - `mkPipelineShiftRight`
+   - `mkSerializerFreeform`
+
+2. **Input-memory connectivity**
+   - The host writes `0x11223344` into `boIn[0]`
+   - The kernel issues a read request on **memory port 0**
+   - The kernel receives the first 512-bit word from the input buffer
+   - Lane 0 of that word is used as the serializer/deserializer test vector
+
+So this is not only a logic self-test. It also confirms that the input side of the kernel is actually receiving the host-written value through the URAM-mapped PLRAM connection.
 
 ---
 
-## 1. Modules in `Serializer.bsv`
+## Module behavior summary
 
 ### `mkSerializer`
-`mkSerializer` splits one wide input word into multiple narrower output words.
+Splits one wide input word into multiple smaller output words.
 
-- Interface: `SerializerIfc#(srcSz, multiplier)`
-- Input width: `srcSz`
-- Output width: `srcSz / multiplier`
-- Behavior:
-  - `put()` accepts one `srcSz`-bit word.
-  - `get()` returns the serialized chunks in little-endian slice order, starting from the least-significant bits.
+In this example:
+- input width = 32 bits
+- split factor = 4
+- output width = 8 bits
+- output order = least-significant byte first
 
-Example:
-- `mkSerializer(32, 4)` converts one 32-bit word into four 8-bit outputs.
-- Input: `0x11223344`
-- Output sequence: `0x44`, `0x33`, `0x22`, `0x11`
+If the input is `0x11223344`, the output stream is:
 
----
+- `0x44`
+- `0x33`
+- `0x22`
+- `0x11`
 
 ### `mkDeSerializer`
-`mkDeSerializer` performs the inverse operation of `mkSerializer`.
+Collects multiple smaller input words and reconstructs one wide output word.
 
-- Interface: `DeSerializerIfc#(srcSz, multiplier)`
-- Input width: `srcSz`
-- Output width: `srcSz * multiplier`
-- Behavior:
-  - `put()` accepts one narrow word at a time.
-  - After `multiplier` inputs are collected, `get()` returns one reconstructed wide word.
+In this example, feeding:
+- `0x44`
+- `0x33`
+- `0x22`
+- `0x11`
 
-Example:
-- `mkDeSerializer(8, 4)` converts four 8-bit inputs into one 32-bit output.
-- Input sequence: `0x44`, `0x33`, `0x22`, `0x11`
-- Output: `0x11223344`
-
----
+produces:
+- `0x11223344`
 
 ### `mkStreamReplicate`
-`mkStreamReplicate` repeats each input element a fixed number of times.
+Repeats each input item `framesize` times.
 
-- Interface: `FIFO#(dtype)`
-- Parameter: `framesize`
-- Behavior:
-  - For every input element, the same value is emitted `framesize` times.
+In this example:
+- input = `0xA6`
+- `framesize = 3`
 
-Example:
-- `mkStreamReplicate(3)`
-- Input: `0xA6`
-- Output sequence: `0xA6`, `0xA6`, `0xA6`
-
----
+output stream:
+- `0xA6`
+- `0xA6`
+- `0xA6`
 
 ### `mkStreamSerializeLast`
-`mkStreamSerializeLast` expands a per-frame boolean flag into a stream where only the last element of the frame carries the flag value.
+Expands one frame-level `last` flag into one flag per beat.
 
-- Interface: `FIFO#(Bool)`
-- Parameter: `framesize`
-- Behavior:
-  - For each input flag, the output frame has length `framesize`.
-  - The first `framesize - 1` outputs are `False`.
-  - The last output is the original input flag.
+In this example:
+- input flag = `True`
+- `framesize = 4`
 
-Example:
-- `mkStreamSerializeLast(4)`
-- Input: `True`
-- Output sequence: `False`, `False`, `False`, `True`
-
----
+output stream:
+- `False`
+- `False`
+- `False`
+- `True`
 
 ### `mkStreamSkip`
-`mkStreamSkip` forwards exactly one element per frame and drops the rest.
+Keeps only one element from each fixed-size frame and discards the others.
 
-- Interface: `FIFO#(dtype)`
-- Parameters:
-  - `framesize`
-  - `offset`
-- Behavior:
-  - Within each frame of length `framesize`, only the element at index `offset` is forwarded.
+In this example:
+- `framesize = 4`
+- `offset = 2`
 
-Example:
-- `mkStreamSkip(4, 2)`
-- Input frame: `[A0, A1, A2, A3]`
-- Output: `A2`
+input stream:
+- frame 0: `A0 A1 A2 A3`
+- frame 1: `B0 B1 B2 B3`
 
----
+output stream:
+- `A2`
+- `B2`
 
 ### `mkPipelineShiftRight`
-`mkPipelineShiftRight` implements a right shifter using a bit-sliced deep pipeline.
+Performs a variable right shift using a bit-sliced deep pipeline.
 
-- Interface: `PipelineShiftIfc#(sz, shiftsz)`
-- Behavior:
-  - `put(v, shift)` inserts a value and shift amount.
-  - `get()` returns `v >> shift` after the pipeline latency.
-- Design intent:
-  - The shift amount is processed stage by stage, one bit per stage.
-  - This avoids a single large combinational variable shifter and is more suitable for timing closure at larger widths.
+In this example:
+- input value = `0xFEDCBA9876543210`
+- shift amount = `12`
 
-Example:
-- Input: `0xFEDCBA9876543210`, shift = `12`
-- Output: `0x000FEDCBA9876543`
-
----
+expected output:
+- `0x000FEDCBA9876543`
 
 ### `mkSerializerFreeform`
-`mkSerializerFreeform` converts a stream between arbitrary source and destination widths, even when the widths are not integer multiples of each other.
+Repackages a wider stream into a narrower stream even when the widths are not an integer multiple.
 
-- Interface: `SerializerFreeformIfc#(srcSz, dstSz)`
-- Behavior:
-  - `put()` accepts `srcSz`-bit words.
-  - `get()` emits `dstSz`-bit words whenever enough bits are available.
-  - Internally, it uses a buffered packing/unpacking strategy plus `mkPipelineShiftRight`.
+In this example:
+- input width = 10 bits
+- output width = 6 bits
+- inputs = `0x3AB`, `0x155`, `0x2C3`
 
-Example used in the self-test:
-- `mkSerializerFreeform(10, 6)`
-- Input words: `3AB`, `155`, `2C3`
-- Output words: `2B`, `1E`, `15`, `0D`, `2C`
-- Packed observation: `0x2B79536C`
+expected five outputs:
+- `0x2B`
+- `0x1E`
+- `0x15`
+- `0x0D`
+- `0x2C`
+
+These are packed into the 30-bit observed value:
+- `0x2B79536C`
 
 ---
 
-## 2. How the self-test example works
+## End-to-end flow of the example
 
-The example kernel instantiates all major modules in `Serializer.bsv` and tests them one by one using a simple state machine.
+### 1. Host prepares buffers
+The host allocates:
+- `boIn` for the input memory path
+- `boOut` for the output/result memory path
 
-### Tested modules
-The self-test covers:
+Then it writes:
+- `boIn[0] = 0x11223344`
+
+This value becomes lane 0 of the first 512-bit input word.
+
+### 2. Host launches the kernel
+The host launches the kernel with the same ABI as before:
+- scalar argument
+- input BO (`mem`, port 0)
+- output BO (`file`, port 1)
+
+### 3. Kernel reads the input word from port 0
+Inside `KernelMain.bsv`, the kernel:
+- issues a **64-byte read request** on memory port 0
+- waits for one 512-bit word to return
+- truncates lane 0 to obtain a 32-bit value
+- stores that observed input in `inputObs`
+- checks whether it equals `0x11223344`
+
+This is the explicit connectivity test for the host-to-kernel input path.
+
+### 4. Kernel runs all Serializer tests
+The kernel state machine then runs the module tests in order:
 
 1. `mkSerializer`
-2. `mkStreamReplicate`
-3. `mkStreamSerializeLast`
-4. `mkDeSerializer`
+2. `mkDeSerializer`
+3. `mkStreamReplicate`
+4. `mkStreamSerializeLast`
 5. `mkStreamSkip`
 6. `mkPipelineShiftRight`
 7. `mkSerializerFreeform`
 
-A 7-bit `passMask` is used to record which module checks passed.
+For `mkSerializer` and `mkDeSerializer`, the kernel uses the host-provided word from port 0.
+For the other modules, the kernel uses fixed internal test vectors.
 
-- bit 0: `mkSerializer`
-- bit 1: `mkStreamReplicate`
-- bit 2: `mkStreamSerializeLast`
-- bit 3: `mkDeSerializer`
-- bit 4: `mkStreamSkip`
-- bit 5: `mkPipelineShiftRight`
-- bit 6: `mkSerializerFreeform`
+### 5. Kernel packs results into one 512-bit word
+After all tests finish, the kernel writes one result word to `boOut` through memory port 1.
 
----
-
-## 3. End-to-end test flow
-
-### Step 1: Start the kernel
-The host launches the kernel as usual:
-
-```cpp
-auto run = krnl(0u, boIn, boOut);
-run.wait();
-```
-
-The demo keeps the original kernel ABI, so two buffer arguments are still passed (`mem` and `file`), even though only the output buffer is used by this test.
+### 6. Host reads and checks the result word
+The host reads back the first 512-bit output word, prints all observed values, checks each pass bit, and reports:
+- `TEST PASSED` if everything matches
+- `TEST FAILED` otherwise
 
 ---
 
-### Step 2: Run module tests inside the kernel
-Inside `KernelMain.bsv`, the kernel performs the following sequence:
+## Output word format
 
-#### A. `mkSerializer`
-- Input: `0x11223344`
-- Expected serialized bytes: `44, 33, 22, 11`
-- Repacked observation: `0x11223344`
-
-#### B. `mkDeSerializer`
-- The same serialized bytes are fed into `mkDeSerializer`
-- Expected reconstructed value: `0x11223344`
-
-#### C. `mkStreamReplicate`
-- Input: `0xA6`
-- Expected output stream: `A6, A6, A6`
-- Packed observation: `0x00A6A6A6`
-
-#### D. `mkStreamSerializeLast`
-- Input: `True`
-- Frame size: `4`
-- Expected output: `0, 0, 0, 1`
-- Packed observation: `0x00000001`
-
-#### E. `mkStreamSkip`
-- Frame size: `4`, offset: `2`
-- Inputs: `A0, A1, A2, A3, B0, B1, B2, B3`
-- Expected forwarded outputs: `A2, B2`
-- Packed observation: `0x0000A2B2`
-
-#### F. `mkPipelineShiftRight`
-- Input: `0xFEDCBA9876543210`
-- Shift amount: `12`
-- Expected output: `0x000FEDCBA9876543`
-
-#### G. `mkSerializerFreeform`
-- Source width: `10`
-- Destination width: `6`
-- Inputs: `0x3AB`, `0x155`, `0x2C3`
-- Expected outputs: `0x2B`, `0x1E`, `0x15`, `0x0D`, `0x2C`
-- Packed observation: `0x2B79536C`
-
----
-
-### Step 3: Pack the results into one 512-bit word
-After all checks complete, the kernel writes one 512-bit result word to output memory.
-
-The result word is organized as sixteen 32-bit lanes:
+The first 512-bit word of `boOut` is interpreted as 16 lanes of 32 bits.
 
 | Lane | Meaning |
-|------|---------|
+|---|---|
 | 0 | magic = `0x53524C5A` (`'SRLZ'`) |
-| 1 | status (`3` means PASS) |
-| 2 | passMask |
+| 1 | status (`3` means overall PASS) |
+| 2 | `passMask` |
 | 3 | elapsed cycles |
-| 4 | serializer observation |
-| 5 | deserializer observation |
-| 6 | replicate observation |
-| 7 | serialize-last observation |
-| 8 | skip observation |
-| 9 | shift result low 32 bits |
-| 10 | shift result high 32 bits |
-| 11 | freeform observation |
-| 12-15 | zero |
-
-If every test passes, the kernel sets:
-
-```text
-status = 3
-passMask = 0x7F
-```
-
-Otherwise, `status` is set to `0xBAD00000 | passMask`.
+| 4 | observed result from `mkSerializer` |
+| 5 | observed result from `mkDeSerializer` |
+| 6 | observed result from `mkStreamReplicate` |
+| 7 | observed result from `mkStreamSerializeLast` |
+| 8 | observed result from `mkStreamSkip` |
+| 9 | low 32 bits of `mkPipelineShiftRight` result |
+| 10 | high 32 bits of `mkPipelineShiftRight` result |
+| 11 | observed result from `mkSerializerFreeform` |
+| 12 | input word observed by the kernel |
+| 13 | input-path pass flag (`1` if lane 12 is `0x11223344`) |
+| 14 | reserved / zero |
+| 15 | reserved / zero |
 
 ---
 
-## 4. Host-side output interpretation
+## Meaning of `passMask`
 
-The host program reads the first 512-bit output word and decodes it into scalar values:
+`passMask` is a 7-bit summary of the Serializer module checks.
 
-- `magic`
-- `status`
-- `passMask`
-- `cycles`
-- one observed value per tested module
+| Bit | Module |
+|---|---|
+| 0 | `mkSerializer` |
+| 1 | `mkStreamReplicate` |
+| 2 | `mkStreamSerializeLast` |
+| 3 | `mkDeSerializer` |
+| 4 | `mkStreamSkip` |
+| 5 | `mkPipelineShiftRight` |
+| 6 | `mkSerializerFreeform` |
 
-It then compares each observed value with the expected golden value and prints `OK` or `FAIL` for each module.
+If all module tests pass, then:
+- `passMask = 0x7F`
 
-Expected values:
-
-| Module | Expected value |
-|--------|----------------|
-| `mkSerializer` | `0x11223344` |
-| `mkDeSerializer` | `0x11223344` |
-| `mkStreamReplicate` | `0x00A6A6A6` |
-| `mkStreamSerializeLast` | `0x00000001` |
-| `mkStreamSkip` | `0x0000A2B2` |
-| `mkPipelineShiftRight` | `0x000FEDCBA9876543` |
-| `mkSerializerFreeform` | `0x2B79536C` |
-
-The host prints `TEST PASSED` only when:
-
-- `magic == 0x53524C5A`, and
-- `status == 3`
+The final `status` is set to:
+- `3` if **all module tests pass** and the **input connectivity test passes**
+- otherwise `0xBAD00000 | passMask`
 
 ---
 
-## 5. Files used in the demo
+## Expected results
 
-- `Serializer.bsv` — serializer/deserializer utility modules
-- `KernelMain.bsv` — hardware self-test state machine
-- `main.cpp` — XRT host application that launches the kernel and decodes the result word
+When the design works correctly, the host should observe:
+
+- host input written by software: `0x11223344`
+- host input observed by kernel: `0x11223344`
+- input-path pass flag: `1`
+- `mkSerializer`          -> `0x11223344`
+- `mkDeSerializer`        -> `0x11223344`
+- `mkStreamReplicate`     -> `0x00A6A6A6`
+- `mkStreamSerializeLast` -> `0x00000001`
+- `mkStreamSkip`          -> `0x0000A2B2`
+- `mkPipelineShiftRight`  -> `0x000FEDCBA9876543`
+- `mkSerializerFreeform`  -> `0x2B79536C`
+- `passMask`              -> `0x0000007F`
+- `status`                -> `0x00000003`
 
 ---
 
-## 6. Notes
+## Why this version is useful
 
-- The demo is intended as a **functional hardware self-test**, not a throughput benchmark.
-- `mkPipelineShiftRight` is intentionally kept as a **deep pipelined shifter**, because that structure is more realistic for wider datapaths and tighter timing goals.
-- The self-test writes only one 512-bit word, so the host-side logic stays simple and easy to inspect.
+This version is more informative than a kernel-only self-test because it validates both:
+
+- the **functional behavior** of all Serializer package modules
+- the **actual memory connectivity path** from host software into the kernel through the URAM-mapped PLRAM-backed input buffer
+
+That makes it a better bring-up example for confirming that the kernel logic and the memory plumbing are both working.
