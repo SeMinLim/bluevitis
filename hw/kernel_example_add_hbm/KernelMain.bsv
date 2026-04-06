@@ -4,15 +4,12 @@ import Vector::*;
 
 import BRAM::*;
 import BRAMFIFO::*;
+import CRC32::*;
 
 
 typedef 1 DataCntTotal512b_X;
-typedef 1 DataCntTotal512b_Y;
-
 typedef 0 MemPortAddrStart_0;
-typedef 0 MemPortAddrStart_1;
 typedef 0 ResultAddrStart;
-
 typedef 2 MemPortCnt;
 typedef struct {
 	Bit#(64) addr;
@@ -26,8 +23,6 @@ interface MemPortIfc;
 	method ActionValue#(Bit#(512)) writeWord;
 	method Action readWord(Bit#(512) word);
 endinterface
-
-
 interface KernelMainIfc;
 	method Action start(Bit#(32) param);
 	method ActionValue#(Bool) done;
@@ -36,24 +31,21 @@ endinterface
 module mkKernelMain(KernelMainIfc);
 	FIFO#(Bool) startQ <- mkFIFO;
 	FIFO#(Bool) doneQ  <- mkFIFO;
-
+	
 	FIFO#(Bit#(512)) dataQ_X <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) dataQ_Y <- mkSizedBRAMFIFO(8);
 	FIFO#(Bit#(512)) resultQ <- mkSizedBRAMFIFO(8);
 
 	Reg#(Bool) started <- mkReg(False);
 	Reg#(Bool) reqReadDataOn_X <- mkReg(False);
 	Reg#(Bool) readDataOn_X <- mkReg(False);
-	Reg#(Bool) reqReadDataOn_Y <- mkReg(False);
-	Reg#(Bool) readDataOn_Y <- mkReg(False);
+	Reg#(Bool) exampleStartPhase1 <- mkReg(False);
+	Reg#(Bool) exampleStartPhase2 <- mkReg(False);
 	Reg#(Bool) reqWriteResultOn <- mkReg(False);
 	Reg#(Bool) writeResultOn <- mkReg(False);
 	//------------------------------------------------------------------------------------
 	// [Cycle Counter]
 	//------------------------------------------------------------------------------------
 	Reg#(Bit#(32)) cycleCounter <- mkReg(0);
-	Reg#(Bit#(32)) cycleStart <- mkReg(0);
-	Reg#(Bit#(32)) cycleDone <- mkReg(0);
 	rule incCycle;
 		cycleCounter <= cycleCounter + 1;
 	endrule
@@ -63,19 +55,17 @@ module mkKernelMain(KernelMainIfc);
 	rule systemStart( !started );
 		startQ.deq;
 		started <= True;
-		reqReadDataOn_X	<= True;
-		reqReadDataOn_Y	<= True;
-		reqWriteResultOn <= True;
+		reqReadDataOn_X <= True;
 	endrule
 	//------------------------------------------------------------------------------------
-	// [Memory Read]
+	// [Memory Read / Write Plumbing]
 	//------------------------------------------------------------------------------------
 	Vector#(MemPortCnt, FIFO#(MemPortReq)) readReqQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(MemPortReq)) writeReqQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(Bit#(512))) writeWordQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(Bit#(512))) readWordQs <- replicateM(mkFIFO);
 
-	// Read the example data 'X'		[MEMPORT 0]
+	// Read one 512-bit input word from MEMPORT 0
 	Reg#(Bit#(32)) reqReadDataCnt_X <- mkReg(0);
 	Reg#(Bit#(64)) memPortAddr_0 <- mkReg(fromInteger(valueOf(MemPortAddrStart_0)));
 	rule reqReadDataX( reqReadDataOn_X );
@@ -84,7 +74,7 @@ module mkKernelMain(KernelMainIfc);
 		if ( reqReadDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
 			memPortAddr_0 <= 0;
 			reqReadDataCnt_X <= 0;
-			reqReadDataOn_X	<= False;
+			reqReadDataOn_X <= False;
 		end else begin
 			memPortAddr_0 <= memPortAddr_0 + 64;
 			reqReadDataCnt_X <= reqReadDataCnt_X + 1;
@@ -94,90 +84,82 @@ module mkKernelMain(KernelMainIfc);
 	endrule
 	Reg#(Bit#(32)) readDataCnt_X <- mkReg(0);
 	rule readDataX( readDataOn_X );
-		readWordQs[0].deq;
 		let data = readWordQs[0].first;
-	
+		readWordQs[0].deq;
+
 		dataQ_X.enq(data);
-		
+
 		if ( readDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
 			readDataCnt_X <= 0;
 			readDataOn_X <= False;
-			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Reading data X is done!\n", cycleCounter );
+			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Read 1 input word\n", cycleCounter );
 		end else begin
 			readDataCnt_X <= readDataCnt_X + 1;
 		end
 
-		cycleStart <= cycleCounter;
-	endrule
-
-	// Read the example data 'Y'		[MEMPORT 1]
-	Reg#(Bit#(32)) reqReadDataCnt_Y <- mkReg(0);
-	Reg#(Bit#(64)) memPortAddr_1 <- mkReg(fromInteger(valueOf(MemPortAddrStart_1)));
-	rule reqReadDataY( reqReadDataOn_Y );
-		readReqQs[1].enq(MemPortReq{addr:memPortAddr_1, bytes:64});
-
-		if ( reqReadDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			memPortAddr_1 <= 0;
-			reqReadDataCnt_Y <= 0;
-			reqReadDataOn_Y	<= False;
-		end else begin
-			memPortAddr_1 <= memPortAddr_1 + 64;
-			reqReadDataCnt_Y <= reqReadDataCnt_Y + 1;
-		end
-
-		readDataOn_Y <= True;
-	endrule
-	Reg#(Bit#(32)) readDataCnt_Y <- mkReg(0);
-	rule readDataY( readDataOn_Y );
-		readWordQs[1].deq;
-		let data = readWordQs[1].first;
-	
-		dataQ_Y.enq(data);
-		
-		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			readDataCnt_Y <= 0;
-			readDataOn_Y <= False;
-			reqWriteResultOn <= True;
-			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Reading data Y is done!\n", cycleCounter );
-		end else begin
-			readDataCnt_Y <= readDataCnt_Y + 1;
-		end
+		exampleStartPhase1 <= True;
 	endrule
 	//------------------------------------------------------------------------------------
-	// Example Logic
+	// Example Logic: compute CRC32 / CRC32C on the lower 64 bits of the input word
+	// Uses functions imported from CRC32.bsv
 	//------------------------------------------------------------------------------------
-	rule example_1;
+	FIFO#(Bit#(32)) crc32MidOQ <- mkSizedBRAMFIFO(8);
+	FIFO#(Bit#(32)) crc32MidCQ <- mkSizedBRAMFIFO(8);
+	FIFO#(Bit#(32)) hi32Q <- mkSizedBRAMFIFO(8);
+	rule examplePhase1( exampleStartPhase1 );
+		let inWord = dataQ_X.first;
 		dataQ_X.deq;
-		dataQ_Y.deq;
-		let x = dataQ_X.first;
-		let y = dataQ_Y.first;
 
-		Bit#(512) r = x + y;
+		Bit#(64) data64 = truncate(inWord);
+		Bit#(32) lo32 = data64[31:0];
+		Bit#(32) hi32 = data64[63:32];
+
+		Bit#(32) crc32_mid  = crc32_update_32_reflected (32'hFFFF_FFFF, lo32);
+		Bit#(32) crc32c_mid = crc32c_update_32_reflected(32'hFFFF_FFFF, lo32);
 		
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Running example is done!\n", cycleCounter );
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : %lu\n", r );
+		hi32Q.enq(hi32);
+		crc32MidOQ.enq(crc32_mid);
+		crc32MidCQ.enq(crc32c_mid);
 
-		resultQ.enq(r);
+		exampleStartPhase2 <= True;
+	endrule
+	rule examplePhase2( exampleStartPhase2 );
+		hi32Q.deq;
+		crc32MidOQ.deq;
+		crc32MidCQ.deq;
+		let hi32 = hi32Q.first;
+		let crc32_mid = crc32MidOQ.first;
+		let crc32c_mid = crc32MidCQ.first;
+
+		Bit#(32) crc32_final  = crc32_update_32_reflected (crc32_mid, hi32);
+		Bit#(32) crc32c_final = crc32c_update_32_reflected(crc32c_mid, hi32);
+
+		Bit#(64) packedFinal = {crc32c_final, crc32_final};
+		Bit#(512) result = zeroExtend(packedFinal);
+
+		resultQ.enq(result);
+		reqWriteResultOn <= True;
 	endrule
 	//------------------------------------------------------------------------------------
 	// [Memory Write] & [System Finish]
-	// Memory Writer is going to use HBM[1] 
-	// 536,870,912 
+	// Write result to MEMPORT 1, first 64 bytes only.
+	// result[31:0]  = CRC32
+	// result[63:32] = CRC32C
 	//------------------------------------------------------------------------------------
 	rule reqWriteResult( reqWriteResultOn );
 		writeReqQs[1].enq(MemPortReq{addr:fromInteger(valueOf(ResultAddrStart)), bytes:64});
-		
 		reqWriteResultOn <= False;
 		writeResultOn <= True;
 	endrule
 	rule writeResult( writeResultOn );
-		resultQ.deq;
 		let r = resultQ.first;
+		resultQ.deq;
 		writeWordQs[1].enq(r);
 
-		// System Finish
+		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Wrote result word\n", cycleCounter );
+
 		writeResultOn <= False;
-		started	<= False;
+		started <= False;
 		doneQ.enq(True);
 	endrule
 	//------------------------------------------------------------------------------------
