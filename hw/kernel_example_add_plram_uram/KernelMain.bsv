@@ -7,6 +7,8 @@ typedef 0 ResultAddrStart;
 typedef 2 MemPortCnt;
 typedef enum {
 	ST_IDLE,
+	ST_READ_REQ,
+	ST_READ_WAIT,
 	ST_SER_PUT,
 	ST_SER_GET,
 	ST_DESER_GET,
@@ -28,10 +30,9 @@ typedef enum {
 	ST_DONE
 } TestState deriving (Bits, Eq);
 typedef struct {
-   Bit#(64) addr;
-   Bit#(32) bytes;
+	Bit#(64) addr;
+	Bit#(32) bytes;
 } MemPortReq deriving (Eq, Bits);
-
 
 
 function Bit#(8) skipInput(UInt#(4) idx);
@@ -79,7 +80,6 @@ module mkKernelMain(KernelMainIfc);
 	Vector#(MemPortCnt, FIFO#(MemPortReq)) writeReqQs  <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(Bit#(512)))  writeWordQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(Bit#(512)))  readWordQs  <- replicateM(mkFIFO);
-
 	//-----------------------------------------------------------------------------------
 	// passMask Bit Assignment
 	// bit0: mkSerializer,   bit1: mkStreamReplicate, bit2: mkStreamSerializeLast
@@ -114,6 +114,9 @@ module mkKernelMain(KernelMainIfc);
 	Reg#(UInt#(3)) freeOutCount <- mkReg(0);
 	Reg#(Bit#(30)) freeObs      <- mkReg(0);
 
+	Reg#(Bit#(32)) inputObs  <- mkReg(0);
+	Reg#(Bool)     inputPass <- mkReg(False);
+	
 	Reg#(Bit#(512)) resultWord <- mkReg(0);
 
 	Reg#(Bit#(32)) cycleCounter <- mkReg(0);
@@ -130,7 +133,7 @@ module mkKernelMain(KernelMainIfc);
 		skip.clear;
 
 		started      <= True;
-		state        <= ST_SER_PUT;
+		state        <= ST_READ_REQ;
 		cycleStart   <= cycleCounter;
 		passMask     <= 0;
 		serCount     <= 0;
@@ -146,13 +149,32 @@ module mkKernelMain(KernelMainIfc);
 		freeInCount  <= 0;
 		freeOutCount <= 0;
 		freeObs      <= 0;
+		inputObs     <= 0;
+		inputPass    <= False;
 		resultWord   <= 0;
+	endrule
+	//-----------------------------------------------------------------------------------
+	// Read one 512-bit word from the input BO (port 0). The host writes 32'h11223344 to lane 0. 
+	// Test the host -> PLRAM(URAM-mapped) -> kernel read path.
+	//-----------------------------------------------------------------------------------
+	rule requestInputWord (started && state == ST_READ_REQ);
+		readReqQs[0].enq(MemPortReq{addr: 64'd0, bytes: 32'd64});
+		state <= ST_READ_WAIT;
+	endrule
+	rule receiveInputWord (started && state == ST_READ_WAIT);
+		let w = readWordQs[0].first;
+		readWordQs[0].deq;
+		
+		Bit#(32) hostWord = truncate(w);
+		inputObs  <= hostWord;
+		inputPass <= (hostWord == 32'h11223344);
+		state <= ST_SER_PUT;
 	endrule
 	//-----------------------------------------------------------------------------------
 	// 1) mkSerializer and 2) mkDeSerializer round-trip
 	//-----------------------------------------------------------------------------------
 	rule testSerializerPut (started && state == ST_SER_PUT);
-		ser.put(32'h11223344);
+		ser.put(inputObs);
 		state <= ST_SER_GET;
 	endrule
 	rule testSerializerGet (started && state == ST_SER_GET);
@@ -163,7 +185,7 @@ module mkKernelMain(KernelMainIfc);
 		deser.put(x);
 
 		if (serCount == 3) begin
-			if (nextSer == 32'h11223344) passMask <= passMask | 7'b0000001;
+			if (nextSer == inputObs) passMask <= passMask | 7'b0000001;
 			serCount <= 0;
 			state <= ST_DESER_GET;
 		end else begin
@@ -173,9 +195,8 @@ module mkKernelMain(KernelMainIfc);
 	rule testDeSerializerGet (started && state == ST_DESER_GET);
 		let x <- deser.get;
 		deserObs <= x;
-
-		if (x == 32'h11223344) passMask <= passMask | 7'b0001000;
-
+		
+		if (x == inputObs) passMask <= passMask | 7'b0001000;
 		state <= ST_REP_PUT;
 	endrule
 	//-----------------------------------------------------------------------------------
@@ -305,16 +326,18 @@ module mkKernelMain(KernelMainIfc);
 	//-----------------------------------------------------------------------------------
 	// Results
 	// 16 x 32-bit lanes in one 512-bit result word.
-	// lane  0: magic,                     lane  1: status (3 means PASS),      lane  2: passMask
-	// lane  3: elapsed cycles,            lane  4: serializer observation,     lane  5: deserializer observation
-	// lane  6: replicate observation,     lane  7: serialize-last observation, lane  8: skip observation
-	// lane  9: shift observation low 32b, lane 10: shift observation high 32b, lane 11: freeform observation
-	// lane 12-15: zero
+	// lane  0: magic,                                  lane  1: status (3 means PASS),
+	// lane  2: passMask,                               lane  3: elapsed cycles,
+	// lane  4: serializer observation,                 lane  5: deserializer observation
+	// lane  6: replicate observation,                  lane  7: serialize-last observation, 
+	// lane  8: skip observation,                       lane  9: shift observation low 32b, 
+	// lane 10: shift observation high 32b,             lane 11: freeform observation
+	// lane 12: host input word observed by the kernel, lane 13: host input pass flag (1 if lane12 == 0x11223344)
+	// lane 14: zero, 				    lane 15: zero
 	//-----------------------------------------------------------------------------------
 	rule packResults (started && state == ST_PACK);
-		Bit#(32) magic    = 32'h53524C5A; // 'SRLZ'
-		Bit#(32) status   = (passMask == 7'b1111111) ? 32'd3 : (32'hBAD00000 | zeroExtend(passMask));
-		Bit#(32) cycles   = cycleCounter - cycleStart;
+		Bit#(32) magic      = 32'h53524C5A; // 'SRLZ'
+		Bit#(32) cycles     = cycleCounter - cycleStart;
 		Bit#(32) passMask32 = zeroExtend(passMask);
 		Bit#(32) repObs32   = zeroExtend(repObs);
 		Bit#(32) lastObs32  = zeroExtend(lastObs);
@@ -322,11 +345,11 @@ module mkKernelMain(KernelMainIfc);
 		Bit#(32) freeObs32  = zeroExtend(freeObs);
 		Bit#(32) shiftLo32  = shiftObs[31:0];
 		Bit#(32) shiftHi32  = shiftObs[63:32];
+		Bit#(32) inputPass32 = zeroExtend(pack(inputPass));
+		Bit#(32) status     = (inputPass && (passMask == 7'b1111111)) ? 32'd3 : (32'hBAD00000 | zeroExtend(passMask));
 
-		resultWord <= { 32'h0, 32'h0, 32'h0, 32'h0,
-			freeObs32, shiftHi32, shiftLo32, skipObs32,
-			lastObs32, repObs32, deserObs, serObs,
-			cycles, passMask32, status, magic };
+		resultWord <= { 32'h0, 32'h0, inputPass32, inputObs, freeObs32, shiftHi32, shiftLo32, skipObs32,
+				lastObs32, repObs32, deserObs, serObs, cycles, passMask32, status, magic };
 		state <= ST_WRITE_REQ;
 	endrule
 
