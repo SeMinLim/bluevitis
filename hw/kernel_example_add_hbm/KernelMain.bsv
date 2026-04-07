@@ -4,6 +4,7 @@ import Vector::*;
 
 import BRAM::*;
 import BRAMFIFO::*;
+import GetPut::*;
 import CRC32::*;
 
 
@@ -29,6 +30,9 @@ interface KernelMainIfc;
 	interface Vector#(MemPortCnt, MemPortIfc) mem;
 endinterface
 module mkKernelMain(KernelMainIfc);
+	CRC32Ifc crc32Reflected <- mkCRC32;
+	CRC32CIfc crc32cReflected <- mkCRC32C;
+
 	FIFO#(Bool) startQ <- mkFIFO;
 	FIFO#(Bool) doneQ  <- mkFIFO;
 	
@@ -103,38 +107,23 @@ module mkKernelMain(KernelMainIfc);
 	// Example Logic: compute CRC32 / CRC32C on the lower 64 bits of the input word
 	// Uses functions imported from CRC32.bsv
 	//------------------------------------------------------------------------------------
-	FIFO#(Bit#(32)) crc32MidOQ <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(32)) crc32MidCQ <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(32)) hi32Q <- mkSizedBRAMFIFO(8);
 	rule examplePhase1( exampleStartPhase1 );
 		let inWord = dataQ_X.first;
 		dataQ_X.deq;
 
 		Bit#(64) data64 = truncate(inWord);
-		Bit#(32) lo32 = data64[31:0];
-		Bit#(32) hi32 = data64[63:32];
-
-		Bit#(32) crc32_mid  = crc32_update_32_reflected (32'hFFFF_FFFF, lo32);
-		Bit#(32) crc32c_mid = crc32c_update_32_reflected(32'hFFFF_FFFF, lo32);
 		
-		hi32Q.enq(hi32);
-		crc32MidOQ.enq(crc32_mid);
-		crc32MidCQ.enq(crc32c_mid);
+		let req = Crc32Req {crcInit: 32'hFFFF_FFFF, data64: data64};
+		crc32Reflected.in.put(req);
+		crc32cReflected.in.put(req);
 
 		exampleStartPhase2 <= True;
 	endrule
 	rule examplePhase2( exampleStartPhase2 );
-		hi32Q.deq;
-		crc32MidOQ.deq;
-		crc32MidCQ.deq;
-		let hi32 = hi32Q.first;
-		let crc32_mid = crc32MidOQ.first;
-		let crc32c_mid = crc32MidCQ.first;
+		let resultCrc32 <- crc32Reflected.out.get;
+		let resultCrc32c <- crc32cReflected.out.get;
 
-		Bit#(32) crc32_final  = crc32_update_32_reflected (crc32_mid, hi32);
-		Bit#(32) crc32c_final = crc32c_update_32_reflected(crc32c_mid, hi32);
-
-		Bit#(64) packedFinal = {crc32c_final, crc32_final};
+		Bit#(64) packedFinal = {resultCrc32c.crcOut, resultCrc32.crcOut};
 		Bit#(512) result = zeroExtend(packedFinal);
 
 		resultQ.enq(result);
