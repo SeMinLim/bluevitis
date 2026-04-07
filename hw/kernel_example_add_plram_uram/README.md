@@ -2,8 +2,6 @@
 
 This example validates the `Serializer.bsv` package inside the `kernel_example_add_plram_uram` design while also checking the **host -> input buffer -> PLRAM/URAM-mapped memory path -> kernel** read path.
 
-Unlike the earlier self-test that generated all stimulus inside the kernel, this version uses a host-provided 32-bit word as the test vector for `mkSerializer` and `mkDeSerializer`.
-
 ---
 
 ## What this example tests
@@ -349,17 +347,6 @@ When the design works correctly, the host should observe:
 - `mkSerializerFreeform` -> `0x2B79536C`
 - `passMask` -> `0x0000007F`
 - `status` -> `0x00000003`
-
----
-
-## Why this version is useful
-
-This version is more informative than a kernel-only self-test because it validates both:
-
-- the **functional behavior** of all Serializer package modules
-- the **actual memory connectivity path** from host software into the kernel through the URAM-mapped PLRAM-backed input buffer
-
-It also makes the PLRAM configuration easier to understand:
 
 - the U50 platform exposes PLRAM banks as on-chip scratchpad memory
 - this example remaps the selected banks from **BRAM-backed PLRAM** to **URAM-backed PLRAM**
