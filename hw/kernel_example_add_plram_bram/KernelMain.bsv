@@ -4,15 +4,12 @@ import Vector::*;
 
 import BRAM::*;
 import BRAMFIFO::*;
+import BLShifter::*;
 
-
-typedef 1 DataCntTotal512b_X;
-typedef 1 DataCntTotal512b_Y;
 
 typedef 0 MemPortAddrStart_0;
 typedef 0 MemPortAddrStart_1;
 typedef 0 ResultAddrStart;
-
 typedef 2 MemPortCnt;
 typedef struct {
 	Bit#(64) addr;
@@ -26,20 +23,36 @@ interface MemPortIfc;
 	method ActionValue#(Bit#(512)) writeWord;
 	method Action readWord(Bit#(512) word);
 endinterface
-
-
 interface KernelMainIfc;
 	method Action start(Bit#(32) param);
 	method ActionValue#(Bool) done;
 	interface Vector#(MemPortCnt, MemPortIfc) mem;
 endinterface
 module mkKernelMain(KernelMainIfc);
-	FIFO#(Bool) startQ <- mkFIFO;
+	FIFO#(Bit#(32)) startQ <- mkFIFO;
 	FIFO#(Bool) doneQ  <- mkFIFO;
 
-	FIFO#(Bit#(512)) dataQ_X <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) dataQ_Y <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) resultQ <- mkSizedBRAMFIFO(8);
+	FIFO#(Bit#(64)) dataQ_X <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) dataQ_Y <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(512)) resultQ <- mkSizedBRAMFIFO(64);
+
+	BLShiftIfc#(Bit#(64), 6, 1) shifter_L_6_1 <- mkPipelinedShift(False);
+	BLShiftIfc#(Bit#(64), 6, 1) shifter_R_6_1 <- mkPipelinedShift(True);
+	BLShiftIfc#(Bit#(64), 6, 2) shifter_L_6_2 <- mkPipelinedShift(False);
+	BLShiftIfc#(Bit#(64), 6, 2) shifter_R_6_2 <- mkPipelinedShift(True);
+	BLShiftIfc#(Bit#(64), 6, 6) shifter_L_6_6 <- mkPipelinedShift(False);
+	BLShiftIfc#(Bit#(64), 6, 6) shifter_R_6_6 <- mkPipelinedShift(True);
+	BLShiftIfc#(Bit#(64), 5, 2) shifter_L_5_2 <- mkPipelinedShift(False);
+	BLShiftIfc#(Bit#(64), 5, 2) shifter_R_5_2 <- mkPipelinedShift(True);
+
+	FIFO#(Bit#(64)) resultQ_L_6_1 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_R_6_1 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_L_6_2 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_R_6_2 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_L_6_6 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_R_6_6 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_L_5_2 <- mkSizedBRAMFIFO(64);
+	FIFO#(Bit#(64)) resultQ_R_5_2 <- mkSizedBRAMFIFO(64);
 
 	Reg#(Bool) started <- mkReg(False);
 	Reg#(Bool) reqReadDataOn_X <- mkReg(False);
@@ -48,6 +61,8 @@ module mkKernelMain(KernelMainIfc);
 	Reg#(Bool) readDataOn_Y <- mkReg(False);
 	Reg#(Bool) reqWriteResultOn <- mkReg(False);
 	Reg#(Bool) writeResultOn <- mkReg(False);
+
+	Reg#(Bit#(32)) dataCntTotal <- mkReg(0);
 	//------------------------------------------------------------------------------------
 	// [Cycle Counter]
 	//------------------------------------------------------------------------------------
@@ -58,30 +73,72 @@ module mkKernelMain(KernelMainIfc);
 		cycleCounter <= cycleCounter + 1;
 	endrule
 	//------------------------------------------------------------------------------------
-	// [System Start]
-	//------------------------------------------------------------------------------------
-	rule systemStart( !started );
-		startQ.deq;
-		started <= True;
-		reqReadDataOn_X	<= True;
-		reqReadDataOn_Y	<= True;
-		reqWriteResultOn <= True;
-	endrule
-	//------------------------------------------------------------------------------------
-	// [Memory Read]
+	// [Memory Read / Write FIFOs]
 	//------------------------------------------------------------------------------------
 	Vector#(MemPortCnt, FIFO#(MemPortReq)) readReqQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(MemPortReq)) writeReqQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(Bit#(512))) writeWordQs <- replicateM(mkFIFO);
 	Vector#(MemPortCnt, FIFO#(Bit#(512))) readWordQs <- replicateM(mkFIFO);
-
-	// Read the example data 'X'		[MEMPORT 0]
+	//------------------------------------------------------------------------------------
+	// [Counters & Addresses]
+	//------------------------------------------------------------------------------------
 	Reg#(Bit#(32)) reqReadDataCnt_X <- mkReg(0);
+	Reg#(Bit#(32)) readDataCnt_X <- mkReg(0);
+	Reg#(Bit#(32)) reqReadDataCnt_Y <- mkReg(0);
+	Reg#(Bit#(32)) readDataCnt_Y <- mkReg(0);
+	Reg#(Bit#(32)) runExampleCnt <- mkReg(0);
+	Reg#(Bit#(32)) packResultCnt <- mkReg(0);
+	Reg#(Bit#(32)) reqWriteResultCnt <- mkReg(0);
+	Reg#(Bit#(32)) writeResultCnt <- mkReg(0);
+
 	Reg#(Bit#(64)) memPortAddr_0 <- mkReg(fromInteger(valueOf(MemPortAddrStart_0)));
+	Reg#(Bit#(64)) memPortAddr_1 <- mkReg(fromInteger(valueOf(MemPortAddrStart_1)));
+	Reg#(Bit#(64)) resultAddr <- mkReg(fromInteger(valueOf(ResultAddrStart)));
+	//------------------------------------------------------------------------------------
+	// [System Start]
+	//------------------------------------------------------------------------------------
+	rule systemStart( !started );
+		let dataCnt = startQ.first;
+		startQ.deq;
+
+		if ( dataCnt == 0 ) begin
+			doneQ.enq(True);
+		end else begin
+			started <= True;
+			reqReadDataOn_X <= True;
+			reqReadDataOn_Y <= True;
+			reqWriteResultOn <= False;
+			writeResultOn <= False;
+
+			dataCntTotal <= dataCnt;
+
+			reqReadDataCnt_X <= 0;
+			readDataCnt_X <= 0;
+			reqReadDataCnt_Y <= 0;
+			readDataCnt_Y <= 0;
+			runExampleCnt <= 0;
+			packResultCnt <= 0;
+			reqWriteResultCnt <= 0;
+			writeResultCnt <= 0;
+
+			memPortAddr_0 <= fromInteger(valueOf(MemPortAddrStart_0));
+			memPortAddr_1 <= fromInteger(valueOf(MemPortAddrStart_1));
+			resultAddr <= fromInteger(valueOf(ResultAddrStart));
+
+			cycleStart <= cycleCounter;
+			cycleDone <= 0;
+
+			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : BLShifter example is started! (count=%u)\n", cycleCounter, dataCnt );
+		end
+	endrule
+	//------------------------------------------------------------------------------------
+	// [Memory Read]
+	//------------------------------------------------------------------------------------
+	// Read the example data 'X' [MEMPORT 0]
 	rule reqReadDataX( reqReadDataOn_X );
 		readReqQs[0].enq(MemPortReq{addr:memPortAddr_0, bytes:64});
 
-		if ( reqReadDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
+		if ( reqReadDataCnt_X + 1 == dataCntTotal ) begin
 			memPortAddr_0 <= 0;
 			reqReadDataCnt_X <= 0;
 			reqReadDataOn_X	<= False;
@@ -92,31 +149,26 @@ module mkKernelMain(KernelMainIfc);
 
 		readDataOn_X <= True;
 	endrule
-	Reg#(Bit#(32)) readDataCnt_X <- mkReg(0);
 	rule readDataX( readDataOn_X );
-		readWordQs[0].deq;
 		let data = readWordQs[0].first;
+		readWordQs[0].deq;
 	
-		dataQ_X.enq(data);
+		dataQ_X.enq(data[63:0]);
 		
-		if ( readDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
+		if ( readDataCnt_X + 1 == dataCntTotal ) begin
 			readDataCnt_X <= 0;
 			readDataOn_X <= False;
 			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Reading data X is done!\n", cycleCounter );
 		end else begin
 			readDataCnt_X <= readDataCnt_X + 1;
 		end
-
-		cycleStart <= cycleCounter;
 	endrule
 
-	// Read the example data 'Y'		[MEMPORT 1]
-	Reg#(Bit#(32)) reqReadDataCnt_Y <- mkReg(0);
-	Reg#(Bit#(64)) memPortAddr_1 <- mkReg(fromInteger(valueOf(MemPortAddrStart_1)));
+	// Read the example data 'Y' [MEMPORT 1]
 	rule reqReadDataY( reqReadDataOn_Y );
 		readReqQs[1].enq(MemPortReq{addr:memPortAddr_1, bytes:64});
 
-		if ( reqReadDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
+		if ( reqReadDataCnt_Y + 1 == dataCntTotal ) begin
 			memPortAddr_1 <= 0;
 			reqReadDataCnt_Y <= 0;
 			reqReadDataOn_Y	<= False;
@@ -127,17 +179,17 @@ module mkKernelMain(KernelMainIfc);
 
 		readDataOn_Y <= True;
 	endrule
-	Reg#(Bit#(32)) readDataCnt_Y <- mkReg(0);
 	rule readDataY( readDataOn_Y );
-		readWordQs[1].deq;
 		let data = readWordQs[1].first;
+		readWordQs[1].deq;
 	
-		dataQ_Y.enq(data);
+		dataQ_Y.enq(data[63:0]);
 		
-		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
+		if ( readDataCnt_Y + 1 == dataCntTotal ) begin
 			readDataCnt_Y <= 0;
 			readDataOn_Y <= False;
 			reqWriteResultOn <= True;
+			writeResultOn <= True;
 			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Reading data Y is done!\n", cycleCounter );
 		end else begin
 			readDataCnt_Y <= readDataCnt_Y + 1;
@@ -146,39 +198,144 @@ module mkKernelMain(KernelMainIfc);
 	//------------------------------------------------------------------------------------
 	// Example Logic
 	//------------------------------------------------------------------------------------
-	rule example_1;
-		dataQ_X.deq;
-		dataQ_Y.deq;
+	// Input  [MEMPORT 0 / 512b]
+	//   lane0 [ 63:  0] : input data
+	// Input  [MEMPORT 1 / 512b]
+	//   lane0 [ 63:  0] : shift amount
+	// Output [MEMPORT 1 / 512b]
+	//   lane0 : Left  shift (shiftsz=6, shift_bits_per_stage=1)
+	//   lane1 : Right shift (shiftsz=6, shift_bits_per_stage=1)
+	//   lane2 : Left  shift (shiftsz=6, shift_bits_per_stage=2)
+	//   lane3 : Right shift (shiftsz=6, shift_bits_per_stage=2)
+	//   lane4 : Left  shift (shiftsz=6, shift_bits_per_stage=6)
+	//   lane5 : Right shift (shiftsz=6, shift_bits_per_stage=6)
+	//   lane6 : Left  shift (shiftsz=5, shift_bits_per_stage=2)
+	//   lane7 : Right shift (shiftsz=5, shift_bits_per_stage=2)
+	//------------------------------------------------------------------------------------
+	// Step 1
+	rule example_step1( started );
 		let x = dataQ_X.first;
 		let y = dataQ_Y.first;
+		dataQ_X.deq;
+		dataQ_Y.deq;
 
-		Bit#(512) r = x + y;
-		
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Running example is done!\n", cycleCounter );
-		$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : %lu\n", r );
+		Bit#(6) shift6 = truncate(y);
+		Bit#(5) shift5 = truncate(y);
 
-		resultQ.enq(r);
+		shifter_L_6_1.enq(x, shift6);
+		shifter_R_6_1.enq(x, shift6);
+		shifter_L_6_2.enq(x, shift6);
+		shifter_R_6_2.enq(x, shift6);
+		shifter_L_6_6.enq(x, shift6);
+		shifter_R_6_6.enq(x, shift6);
+		shifter_L_5_2.enq(x, shift5);
+		shifter_R_5_2.enq(x, shift5);
+
+		runExampleCnt <= runExampleCnt + 1;
+		if ( runExampleCnt + 1 == dataCntTotal ) begin
+			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Feeding BLShifter input data is done!\n", cycleCounter );
+		end
+	endrule
+	// Step 2
+	rule example_step2_L_6_1( started );
+		let r = shifter_L_6_1.first;
+		shifter_L_6_1.deq;
+		resultQ_L_6_1.enq(r);
+	endrule
+	rule example_step2_R_6_1( started );
+		let r = shifter_R_6_1.first;
+		shifter_R_6_1.deq;
+		resultQ_R_6_1.enq(r);
+	endrule
+	rule example_step2_L_6_2( started );
+		let r = shifter_L_6_2.first;
+		shifter_L_6_2.deq;
+		resultQ_L_6_2.enq(r);
+	endrule
+	rule example_step2_R_6_2( started );
+		let r = shifter_R_6_2.first;
+		shifter_R_6_2.deq;
+		resultQ_R_6_2.enq(r);
+	endrule
+	rule example_step2_L_6_6( started );
+		let r = shifter_L_6_6.first;
+		shifter_L_6_6.deq;
+		resultQ_L_6_6.enq(r);
+	endrule
+	rule example_step2_R_6_6( started );
+		let r = shifter_R_6_6.first;
+		shifter_R_6_6.deq;
+		resultQ_R_6_6.enq(r);
+	endrule
+	rule example_step2_L_5_2( started );
+		let r = shifter_L_5_2.first;
+		shifter_L_5_2.deq;
+		resultQ_L_5_2.enq(r);
+	endrule
+	rule example_step2_R_5_2( started );
+		let r = shifter_R_5_2.first;
+		shifter_R_5_2.deq;
+		resultQ_R_5_2.enq(r);
+	endrule
+
+	rule example_step3( started );
+		let r_L_6_1 = resultQ_L_6_1.first;
+		let r_R_6_1 = resultQ_R_6_1.first;
+		let r_L_6_2 = resultQ_L_6_2.first;
+		let r_R_6_2 = resultQ_R_6_2.first;
+		let r_L_6_6 = resultQ_L_6_6.first;
+		let r_R_6_6 = resultQ_R_6_6.first;
+		let r_L_5_2 = resultQ_L_5_2.first;
+		let r_R_5_2 = resultQ_R_5_2.first;
+
+		resultQ_L_6_1.deq;
+		resultQ_R_6_1.deq;
+		resultQ_L_6_2.deq;
+		resultQ_R_6_2.deq;
+		resultQ_L_6_6.deq;
+		resultQ_R_6_6.deq;
+		resultQ_L_5_2.deq;
+		resultQ_R_5_2.deq;
+
+		resultQ.enq({r_R_5_2, r_L_5_2, r_R_6_6, r_L_6_6, r_R_6_2, r_L_6_2, r_R_6_1, r_L_6_1});
+
+		packResultCnt <= packResultCnt + 1;
+		if ( packResultCnt + 1 == dataCntTotal ) begin
+			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Running BLShifter example is done!\n", cycleCounter );
+		end
 	endrule
 	//------------------------------------------------------------------------------------
 	// [Memory Write] & [System Finish]
-	// Memory Writer is going to use HBM[1] 
-	// 536,870,912 
+	// Memory Writer is going to use PLRAM[1]
 	//------------------------------------------------------------------------------------
-	rule reqWriteResult( reqWriteResultOn );
-		writeReqQs[1].enq(MemPortReq{addr:fromInteger(valueOf(ResultAddrStart)), bytes:64});
+	rule reqWriteResult( reqWriteResultOn && ( reqWriteResultCnt < packResultCnt ) );
+		writeReqQs[1].enq(MemPortReq{addr:resultAddr, bytes:64});
 		
-		reqWriteResultOn <= False;
-		writeResultOn <= True;
+		if ( reqWriteResultCnt + 1 == dataCntTotal ) begin
+			resultAddr <= 0;
+			reqWriteResultCnt <= reqWriteResultCnt + 1;
+			reqWriteResultOn <= False;
+		end else begin
+			resultAddr <= resultAddr + 64;
+			reqWriteResultCnt <= reqWriteResultCnt + 1;
+		end
 	endrule
-	rule writeResult( writeResultOn );
-		resultQ.deq;
+	rule writeResult( writeResultOn && ( writeResultCnt < reqWriteResultCnt ) );
 		let r = resultQ.first;
+		resultQ.deq;
 		writeWordQs[1].enq(r);
 
-		// System Finish
-		writeResultOn <= False;
-		started	<= False;
-		doneQ.enq(True);
+		if ( writeResultCnt + 1 == dataCntTotal ) begin
+			cycleDone <= cycleCounter;
+			writeResultCnt <= writeResultCnt + 1;
+			writeResultOn <= False;
+			started	<= False;
+			doneQ.enq(True);
+			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Writing BLShifter result is done!\n", cycleCounter );
+			$write( "\033[1;32mCycle %u\033[0m -> \033[1;33m[KernelMain]\033[0m : Total cycle = %u\n", cycleCounter, cycleCounter - cycleStart );
+		end else begin
+			writeResultCnt <= writeResultCnt + 1;
+		end
 	endrule
 	//------------------------------------------------------------------------------------
 	// Interface
@@ -187,16 +344,19 @@ module mkKernelMain(KernelMainIfc);
 	for (Integer i = 0; i < valueOf(MemPortCnt); i = i + 1) begin
 		mem_[i] = interface MemPortIfc;
 			method ActionValue#(MemPortReq) readReq;
+				let r = readReqQs[i].first;
 				readReqQs[i].deq;
-				return readReqQs[i].first;
+				return r;
 			endmethod
 			method ActionValue#(MemPortReq) writeReq;
+				let r = writeReqQs[i].first;
 				writeReqQs[i].deq;
-				return writeReqQs[i].first;
+				return r;
 			endmethod
 			method ActionValue#(Bit#(512)) writeWord;
+				let w = writeWordQs[i].first;
 				writeWordQs[i].deq;
-				return writeWordQs[i].first;
+				return w;
 			endmethod
 			method Action readWord(Bit#(512) word);
 				readWordQs[i].enq(word);
@@ -204,11 +364,12 @@ module mkKernelMain(KernelMainIfc);
 		endinterface;
 	end
 	method Action start(Bit#(32) param) if ( started == False );
-		startQ.enq(True);
+		startQ.enq(param);
 	endmethod
 	method ActionValue#(Bool) done;
+		let d = doneQ.first;
 		doneQ.deq;
-		return doneQ.first;
+		return d;
 	endmethod
 	interface mem = mem_;
 endmodule
