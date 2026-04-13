@@ -1,333 +1,416 @@
 import FIFO::*;
-import FIFOF::*;
 import Vector::*;
-
-import BRAM::*;
-import BRAMFIFO::*;
-
 import URAM::*;
-import URAMFIFO::*;
-
-
-typedef 1 DataCntTotal512b_X;
-typedef 1 DataCntTotal512b_Y;
+import Float32::*;
 
 typedef 0 MemPortAddrStart_0;
-typedef 0 MemPortAddrStart_1;
 typedef 0 ResultAddrStart;
-
 typedef 2 MemPortCnt;
-typedef struct {
-	Bit#(64) addr;
-	Bit#(32) bytes;
-} MemPortReq deriving (Eq,Bits);
 
+typedef struct {
+   Bit#(64) addr;
+   Bit#(32) bytes;
+} MemPortReq deriving (Eq, Bits);
+
+typedef enum {
+   ST_IDLE,
+   ST_REQ_INPUT,
+   ST_RECV_INPUT,
+   ST_REQ_URAM_IN,
+   ST_RECV_URAM_IN,
+   ST_ADD_ENQ,
+   ST_ADD_GET,
+   ST_SUB_ENQ,
+   ST_SUB_GET,
+   ST_MUL_ENQ,
+   ST_MUL_GET,
+   ST_DIV_ENQ,
+   ST_DIV_GET,
+   ST_SQRT_ENQ,
+   ST_SQRT_GET,
+   ST_EXP_ENQ,
+   ST_EXP_GET,
+   ST_FMA_ENQ,
+   ST_FMA_GET,
+   ST_SQRTCUBE_ENQ,
+   ST_SQRTCUBE_GET,
+   ST_PACK_RESULT,
+   ST_STORE_RESULT_URAM,
+   ST_REQ_URAM_OUT,
+   ST_RECV_URAM_OUT,
+   ST_REQ_WRITE,
+   ST_WRITE_WORD,
+   ST_DONE
+} TestState deriving (Bits, Eq);
 
 interface MemPortIfc;
-	method ActionValue#(MemPortReq) readReq;
-	method ActionValue#(MemPortReq) writeReq;
-	method ActionValue#(Bit#(512)) writeWord;
-	method Action readWord(Bit#(512) word);
+   method ActionValue#(MemPortReq) readReq;
+   method ActionValue#(MemPortReq) writeReq;
+   method ActionValue#(Bit#(512)) writeWord;
+   method Action readWord(Bit#(512) word);
 endinterface
-
 
 interface KernelMainIfc;
-	method Action start(Bit#(32) param);
-	method ActionValue#(Bool) done;
-	interface Vector#(MemPortCnt, MemPortIfc) mem;
+   method Action start(Bit#(32) param);
+   method ActionValue#(Bool) done;
+   interface Vector#(MemPortCnt, MemPortIfc) mem;
 endinterface
+
 module mkKernelMain(KernelMainIfc);
-	FIFO#(Bool) startQ <- mkFIFO;
-	FIFO#(Bool) doneQ  <- mkFIFO;
 
-	FIFO#(Bit#(512)) dataQ_X <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) dataQ_Y <- mkSizedBRAMFIFO(8);
-	FIFO#(Bit#(512)) resultQ <- mkSizedBRAMFIFO(8);
+   // --------------------------------------------------------------------------
+   // Constants
+   // --------------------------------------------------------------------------
+   Bit#(32) kMagic         = 32'h46503332; // "FP32"
+   Bit#(32) kInputMagic0   = 32'h13579BDF;
+   Bit#(32) kInputMagic1   = 32'h2468ACE0;
+   Bit#(32) kAddExpected   = 32'h40700000; // 3.75
+   Bit#(32) kSubExpected   = 32'h40500000; // 3.25
+   Bit#(32) kMulExpected   = 32'hC0400000; // -3.0
+   Bit#(32) kDivExpected   = 32'h40400000; // 3.0
+   Bit#(32) kSqrtExpected  = 32'h40400000; // 3.0
+   Bit#(32) kExpExpected   = 32'h3F800000; // exp(0) = 1.0
+   Bit#(32) kFmaExpected   = 32'h40600000; // 3.5
+   Bit#(32) kScubeExpected = 32'h41000000; // 8.0
 
-	Reg#(Bool) started <- mkReg(False);
+   // --------------------------------------------------------------------------
+   // Start / done
+   // --------------------------------------------------------------------------
+   FIFO#(Bool) startQ <- mkFIFO;
+   FIFO#(Bool) doneQ  <- mkFIFO;
 
-	Reg#(Bool) reqReadDataOn_X <- mkReg(False);
-	Reg#(Bool) readDataOn_X <- mkReg(False);
-	Reg#(Bool) reqReadUramOn_X <- mkReg(False);
-	Reg#(Bool) readUramOn_X <- mkReg(False);
+   Reg#(Bool) started <- mkReg(False);
+   Reg#(TestState) state <- mkReg(ST_IDLE);
 
-	Reg#(Bool) reqReadDataOn_Y <- mkReg(False);
-	Reg#(Bool) readDataOn_Y <- mkReg(False);
-	Reg#(Bool) reqReadUramOn_Y <- mkReg(False);
-	Reg#(Bool) readUramOn_Y <- mkReg(False);
+   // --------------------------------------------------------------------------
+   // Cycle counter
+   // --------------------------------------------------------------------------
+   Reg#(Bit#(32)) cycleCounter <- mkReg(0);
+   Reg#(Bit#(32)) cycleStart   <- mkReg(0);
 
-	Reg#(Bool) examOn <- mkReg(False);
-	Reg#(Bool) reqWriteResultOn <- mkReg(False);
-	Reg#(Bool) writeResultOn <- mkReg(False);
-	//------------------------------------------------------------------------------------
-	// [Cycle Counter]
-	//------------------------------------------------------------------------------------
-	Reg#(Bit#(32)) cycleCounter <- mkReg(0);
-	Reg#(Bit#(32)) cycleStart <- mkReg(0);
-	Reg#(Bit#(32)) cycleDone <- mkReg(0);
-	rule incCycle;
-		cycleCounter <= cycleCounter + 1;
-	endrule
-	//------------------------------------------------------------------------------------
-	// [URAM]
-	//------------------------------------------------------------------------------------
-	URAM_Configure cfg = defaultValue;
-	URAM2Port#(Bit#(10), Bit#(512)) uramX <- mkURAM2Server(cfg);
-	URAM2Port#(Bit#(10), Bit#(512)) uramY <- mkURAM2Server(cfg);
-	//------------------------------------------------------------------------------------
-	// [System Start]
-	//------------------------------------------------------------------------------------
-	rule systemStart( !started );
-		startQ.deq;
-		started <= True;
-		reqReadDataOn_X	<= True;
-		reqReadDataOn_Y	<= True;
-		examOn <= True;
-	endrule
-	//------------------------------------------------------------------------------------
-	// [Memory Read]
-	//------------------------------------------------------------------------------------
-	Vector#(MemPortCnt, FIFO#(MemPortReq)) readReqQs <- replicateM(mkFIFO);
-	Vector#(MemPortCnt, FIFO#(MemPortReq)) writeReqQs <- replicateM(mkFIFO);
-	Vector#(MemPortCnt, FIFO#(Bit#(512))) writeWordQs <- replicateM(mkFIFO);
-	Vector#(MemPortCnt, FIFO#(Bit#(512))) readWordQs <- replicateM(mkFIFO);
+   rule incCycle;
+      cycleCounter <= cycleCounter + 1;
+   endrule
 
-	// Read the example data 'X'		[MEMPORT 0]
-	Reg#(Bit#(32)) reqReadDataCnt_X <- mkReg(0);
-	Reg#(Bit#(64)) memPortAddr_0 <- mkReg(fromInteger(valueOf(MemPortAddrStart_0)));
-	rule reqReadDataX( reqReadDataOn_X );
-		readReqQs[0].enq(MemPortReq{addr:memPortAddr_0, bytes:64});
+   // --------------------------------------------------------------------------
+   // Memory-port queues
+   // --------------------------------------------------------------------------
+   Vector#(MemPortCnt, FIFO#(MemPortReq))   readReqQs   <- replicateM(mkFIFO);
+   Vector#(MemPortCnt, FIFO#(MemPortReq))   writeReqQs  <- replicateM(mkFIFO);
+   Vector#(MemPortCnt, FIFO#(Bit#(512)))    writeWordQs <- replicateM(mkFIFO);
+   Vector#(MemPortCnt, FIFO#(Bit#(512)))    readWordQs  <- replicateM(mkFIFO);
 
-		if ( reqReadDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			memPortAddr_0 <= 0;
-			reqReadDataCnt_X <= 0;
-			reqReadDataOn_X <= False;
-			$display( "[KernelMain] Requesting Global Memory Port A is Done!" );
-		end else begin
-			if ( reqReadDataCnt_X == 0 ) $display( "[KernelMain] Requesting Global Memory Port A is Started!" );
-			memPortAddr_0 <= memPortAddr_0 + 64;
-			reqReadDataCnt_X <= reqReadDataCnt_X + 1;
-		end
+   // --------------------------------------------------------------------------
+   // URAM staging
+   // --------------------------------------------------------------------------
+   URAM_Configure cfg = defaultValue;
+   URAM2Port#(Bit#(10), Bit#(512)) uramIn  <- mkURAM2Server(cfg);
+   URAM2Port#(Bit#(10), Bit#(512)) uramOut <- mkURAM2Server(cfg);
 
-		readDataOn_X <= True;
-	endrule
-	Reg#(Bit#(32)) readDataCnt_X <- mkReg(0);
-	Reg#(Bit#(10)) uramWriteAddr_X <- mkReg(0);
-	rule readDataX( readDataOn_X );
-		readWordQs[0].deq;
-		let data = readWordQs[0].first;
-	
-		uramX.portA.request.put(URAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_X, datain:data});
-		
-		if ( readDataCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			uramWriteAddr_X <= 0;
-			readDataCnt_X <= 0;
-			readDataOn_X <= False;
-			reqReadUramOn_X <= True;
-			$display( "[KernelMain] Reading Global Memory Port A is Done!" );
-		end else begin
-			if ( readDataCnt_X == 0 ) $display( "[KernelMain] Reading Global Memory Port A is Started!" );
-			uramWriteAddr_X <= uramWriteAddr_X + 1;
-			readDataCnt_X <= readDataCnt_X + 1;
-		end
+   Reg#(Bit#(512)) inputWord  <- mkReg(0);
+   Reg#(Bit#(512)) resultWord <- mkReg(0);
+   Reg#(Bool)      hostPathPass <- mkReg(False);
 
-		cycleStart <= cycleCounter;
-	endrule
-	Reg#(Bit#(32)) reqReadUramCnt_X <- mkReg(0);
-	Reg#(Bit#(10)) uramReadAddr_X <- mkReg(0);
-	rule reqReadUramX( reqReadUramOn_X );
-		uramX.portB.request.put(URAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_X, datain:?});
+   // --------------------------------------------------------------------------
+   // Floating-point modules
+   // --------------------------------------------------------------------------
+   FpPairIfc#(32)    fpAdd       <- mkFpAdd32;
+   FpPairIfc#(32)    fpSub       <- mkFpSub32;
+   FpPairIfc#(32)    fpMult      <- mkFpMult32;
+   FpPairIfc#(32)    fpDiv       <- mkFpDiv32;
+   FpFilterIfc#(32)  fpSqrt      <- mkFpSqrt32;
+   FpFilterIfc#(32)  fpExp       <- mkFpExp32;
+   FpThreeOpIfc#(32) fpFma       <- mkFpFma32;
+   FpFilterIfc#(32)  fpSqrtCube  <- mkFpSqrtCube32;
 
-		if ( reqReadUramCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			uramReadAddr_X <= 0;
-			reqReadUramCnt_X <= 0;
-			reqReadUramOn_X <= False;
-			$display( "[KernelMain] Requesting URAM_X is Done!" );
-		end else begin
-			if ( reqReadUramCnt_X == 0 ) $display( "[KernelMain] Requesting URAM_X is Started!" );
-			uramReadAddr_X <= uramReadAddr_X + 1;
-			reqReadUramCnt_X <= reqReadUramCnt_X + 1;
-		end
+   Reg#(Bit#(32)) addObs       <- mkReg(0);
+   Reg#(Bit#(32)) subObs       <- mkReg(0);
+   Reg#(Bit#(32)) multObs      <- mkReg(0);
+   Reg#(Bit#(32)) divObs       <- mkReg(0);
+   Reg#(Bit#(32)) sqrtObs      <- mkReg(0);
+   Reg#(Bit#(32)) expObs       <- mkReg(0);
+   Reg#(Bit#(32)) fmaObs       <- mkReg(0);
+   Reg#(Bit#(32)) sqrtCubeObs  <- mkReg(0);
+   Reg#(Bit#(8))  passMask     <- mkReg(0);
 
-		readUramOn_X <= True;
-	endrule
-	Reg#(Bit#(32)) readUramCnt_X <- mkReg(0);
-	rule readUramX( readUramOn_X );
-		let d <- uramX.portB.response.get();
-		dataQ_X.enq(d);
+   // --------------------------------------------------------------------------
+   // System start
+   // --------------------------------------------------------------------------
+   rule systemStart (!started);
+      startQ.deq;
+      started      <= True;
+      state        <= ST_REQ_INPUT;
+      cycleStart   <= cycleCounter;
+      inputWord    <= 0;
+      resultWord   <= 0;
+      hostPathPass <= False;
+      addObs       <= 0;
+      subObs       <= 0;
+      multObs      <= 0;
+      divObs       <= 0;
+      sqrtObs      <= 0;
+      expObs       <= 0;
+      fmaObs       <= 0;
+      sqrtCubeObs  <= 0;
+      passMask     <= 0;
+   endrule
 
-		if ( readUramCnt_X + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			readUramCnt_X <= 0;
-			readUramOn_X <= False;
-			$display( "[KernelMain] Reading URAM_X is Done!" );
-		end else begin
-			if ( readUramCnt_X == 0 ) $display( "[KernelMain] Reading URAM_X is Started!" );
-			readUramCnt_X <= readUramCnt_X + 1;
-		end
-	endrule
+   // --------------------------------------------------------------------------
+   // Read one 512-bit input beat from the direct host connection and store it
+   // into URAM. Then read it back from URAM before running the tests.
+   // --------------------------------------------------------------------------
+   rule reqInput (started && state == ST_REQ_INPUT);
+      readReqQs[0].enq(MemPortReq{addr: 64'd0, bytes: 32'd64});
+      state <= ST_RECV_INPUT;
+   endrule
 
-	// Read the example data 'Y'		[MEMPORT 1]
-	Reg#(Bit#(32)) reqReadDataCnt_Y <- mkReg(0);
-	Reg#(Bit#(64)) memPortAddr_1 <- mkReg(fromInteger(valueOf(MemPortAddrStart_1)));
-	rule reqReadDataY( reqReadDataOn_Y );
-		readReqQs[1].enq(MemPortReq{addr:memPortAddr_1, bytes:64});
+   rule recvInput (started && state == ST_RECV_INPUT);
+      let w = readWordQs[0].first;
+      readWordQs[0].deq;
+      inputWord <= w;
+      uramIn.portA.request.put(
+         URAMRequest{write: True, responseOnWrite: False, address: 0, datain: w}
+      );
+      state <= ST_REQ_URAM_IN;
+   endrule
 
-		if ( reqReadDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			memPortAddr_1 <= 0;
-			reqReadDataCnt_Y <= 0;
-			reqReadDataOn_Y <= False;
-			$display( "[KernelMain] Requesting Global Memory Port B is Done!" );
-		end else begin
-			if ( reqReadDataCnt_Y == 0 ) $display( "[KernelMain] Requesting Global Memory Port B is Started!" );
-			memPortAddr_1 <= memPortAddr_1 + 64;
-			reqReadDataCnt_Y <= reqReadDataCnt_Y + 1;
-		end
+   rule reqReadUramIn (started && state == ST_REQ_URAM_IN);
+      uramIn.portB.request.put(
+         URAMRequest{write: False, responseOnWrite: False, address: 0, datain: ?}
+      );
+      state <= ST_RECV_URAM_IN;
+   endrule
 
-		readDataOn_Y <= True;
-	endrule
-	Reg#(Bit#(32)) readDataCnt_Y <- mkReg(0);
-	Reg#(Bit#(10)) uramWriteAddr_Y <- mkReg(0);
-	rule readDataY( readDataOn_Y );
-		readWordQs[1].deq;
-		let data = readWordQs[1].first;
-	
-		uramY.portA.request.put(URAMRequest{write:True, responseOnWrite:False, address:uramWriteAddr_Y, datain:data});
-		
-		if ( readDataCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			uramWriteAddr_Y <= 0;
-			readDataCnt_Y <= 0;
-			readDataOn_Y <= False;
-			reqReadUramOn_Y <= True;
-			$display( "[KernelMain] Reading Global Memory Port B is Done!" );
-		end else begin
-			if ( readDataCnt_Y == 0 ) $display( "[KernelMain] Reading Global Memory Port B is Started!" );
-			uramWriteAddr_Y <= uramWriteAddr_Y + 1;
-			readDataCnt_Y <= readDataCnt_Y + 1;
-		end
-	endrule
-	Reg#(Bit#(32)) reqReadUramCnt_Y <- mkReg(0);
-	Reg#(Bit#(10)) uramReadAddr_Y <- mkReg(0);
-	rule reqReadUramY( reqReadUramOn_Y );
-		uramY.portB.request.put(URAMRequest{write:False, responseOnWrite:False, address:uramReadAddr_Y, datain:?});
+   rule recvReadUramIn (started && state == ST_RECV_URAM_IN);
+      let w <- uramIn.portB.response.get;
+      inputWord <= w;
+      hostPathPass <= (w[479:448] == kInputMagic0) && (w[511:480] == kInputMagic1);
+      state <= ST_ADD_ENQ;
+   endrule
 
-		if ( reqReadUramCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			uramReadAddr_Y <= 0;
-			reqReadUramCnt_Y <= 0;
-			reqReadUramOn_Y <= False;
-			$display( "[KernelMain] Requesting URAM_Y is Done!" );
-		end else begin
-			if ( reqReadUramCnt_Y == 0 ) $display( "[KernelMain] Reading URAM_Y is Started!" );
-			uramReadAddr_Y <= uramReadAddr_Y + 1;
-			reqReadUramCnt_Y <= reqReadUramCnt_Y + 1;
-		end
+   // --------------------------------------------------------------------------
+   // 8 module tests, sequentially issued.
+   // Input lanes in the single 512-bit word:
+   //   0:add_a  1:add_b  2:sub_a  3:sub_b
+   //   4:mul_a  5:mul_b  6:div_a  7:div_b
+   //   8:sqrt_a 9:exp_a 10:fma_a 11:fma_b 12:fma_c 13:sqrtcube_a
+   //   14:input_magic0 15:input_magic1
+   // --------------------------------------------------------------------------
+   rule doAddEnq (started && state == ST_ADD_ENQ);
+      fpAdd.enq(inputWord[31:0], inputWord[63:32]);
+      state <= ST_ADD_GET;
+   endrule
 
-		readUramOn_Y <= True;
-	endrule
-	Reg#(Bit#(32)) readUramCnt_Y <- mkReg(0);
-	rule readUramY( readUramOn_Y );
-		let d <- uramY.portB.response.get();
-		dataQ_Y.enq(d);
+   rule doAddGet (started && state == ST_ADD_GET);
+      let v = fpAdd.first;
+      fpAdd.deq;
+      addObs <= v;
+      if (v == kAddExpected)
+         passMask <= passMask | 8'h01;
+      state <= ST_SUB_ENQ;
+   endrule
 
-		if ( readUramCnt_Y + 1 == fromInteger(valueOf(DataCntTotal512b_Y)) ) begin
-			readUramCnt_Y <= 0;
-			readUramOn_Y <= False;
-			$display( "[KernelMain] Reading URAM_Y is Done!" );
-		end else begin
-			if ( readUramCnt_Y == 0 ) $display( "[KernelMain] Reading URAM_Y is Started!" );
-			readUramCnt_Y <= readUramCnt_Y + 1;
-		end
+   rule doSubEnq (started && state == ST_SUB_ENQ);
+      fpSub.enq(inputWord[95:64], inputWord[127:96]);
+      state <= ST_SUB_GET;
+   endrule
 
-		reqWriteResultOn <= True;
-	endrule
-	//------------------------------------------------------------------------------------
-	// Example Logic
-	//------------------------------------------------------------------------------------
-	Reg#(Bit#(32)) examCnt <- mkReg(0);
-	rule example_2( examOn );
-		dataQ_X.deq;
-		dataQ_Y.deq;
-		let x = dataQ_X.first;
-		let y = dataQ_Y.first;
+   rule doSubGet (started && state == ST_SUB_GET);
+      let v = fpSub.first;
+      fpSub.deq;
+      subObs <= v;
+      if (v == kSubExpected)
+         passMask <= passMask | 8'h02;
+      state <= ST_MUL_ENQ;
+   endrule
 
-		Bit#(512) r = x + y;
-		
-		resultQ.enq(r);
+   rule doMulEnq (started && state == ST_MUL_ENQ);
+      fpMult.enq(inputWord[159:128], inputWord[191:160]);
+      state <= ST_MUL_GET;
+   endrule
 
-		if ( examCnt + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			examCnt <= 0;
-			examOn <= False;
-			$display( "[KernelMain] Running Example Logic is Done!" );
-		end else begin
-			if ( examCnt == 0 ) $display( "[KernelMain] Running Example Logic is Started!" );
-			examCnt <= examCnt + 1;
-		end
-	endrule
-	//------------------------------------------------------------------------------------
-	// [Memory Write] & [System Finish]
-	// Memory Writer is going to use global memory port 2 
-	//------------------------------------------------------------------------------------
-	Reg#(Bit#(32)) reqWriteResultCnt <- mkReg(0);
-	rule reqWriteResult( reqWriteResultOn );
-		writeReqQs[1].enq(MemPortReq{addr:fromInteger(valueOf(ResultAddrStart)), bytes:64});
-		
+   rule doMulGet (started && state == ST_MUL_GET);
+      let v = fpMult.first;
+      fpMult.deq;
+      multObs <= v;
+      if (v == kMulExpected)
+         passMask <= passMask | 8'h04;
+      state <= ST_DIV_ENQ;
+   endrule
 
-		if ( reqWriteResultCnt + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			reqWriteResultCnt <= 0;
-			reqWriteResultOn <= False;
-			$display( "[KernelMain] Requesting of Writing Result is Done!" );
-		end else begin
-			if ( reqWriteResultCnt == 0 ) $display( "[KernelMain] Requesting of Writing Result is Started!" );
-			reqWriteResultCnt <= reqWriteResultCnt + 1;
-		end
+   rule doDivEnq (started && state == ST_DIV_ENQ);
+      fpDiv.enq(inputWord[223:192], inputWord[255:224]);
+      state <= ST_DIV_GET;
+   endrule
 
-		writeResultOn <= True;
-	endrule
-	Reg#(Bit#(32)) writeResultCnt <- mkReg(0);
-	rule writeResult( writeResultOn );
-		resultQ.deq;
-		let r = resultQ.first;
-		writeWordQs[1].enq(r);
-		
-		if ( writeResultCnt + 1 == fromInteger(valueOf(DataCntTotal512b_X)) ) begin
-			writeResultCnt <= 0;
-			writeResultOn <= False;
-			started <= False;
-			doneQ.enq(True);
-			$display( "[KernelMain] Writing Result is Done!" );
-		end else begin
-			if ( writeResultCnt == 0 ) $display( "[KernelMain] Writing Result is Started!" );
-			writeResultCnt <= writeResultCnt + 1;
-		end
-	endrule
-	//------------------------------------------------------------------------------------
-	// Interface
-	//------------------------------------------------------------------------------------
-	Vector#(MemPortCnt, MemPortIfc) mem_;
-	for (Integer i = 0; i < valueOf(MemPortCnt); i = i + 1) begin
-		mem_[i] = interface MemPortIfc;
-			method ActionValue#(MemPortReq) readReq;
-				readReqQs[i].deq;
-				return readReqQs[i].first;
-			endmethod
-			method ActionValue#(MemPortReq) writeReq;
-				writeReqQs[i].deq;
-				return writeReqQs[i].first;
-			endmethod
-			method ActionValue#(Bit#(512)) writeWord;
-				writeWordQs[i].deq;
-				return writeWordQs[i].first;
-			endmethod
-			method Action readWord(Bit#(512) word);
-				readWordQs[i].enq(word);
-			endmethod
-		endinterface;
-	end
-	method Action start(Bit#(32) param) if ( started == False );
-		startQ.enq(True);
-	endmethod
-	method ActionValue#(Bool) done;
-		doneQ.deq;
-		return doneQ.first;
-	endmethod
-	interface mem = mem_;
+   rule doDivGet (started && state == ST_DIV_GET);
+      let v = fpDiv.first;
+      fpDiv.deq;
+      divObs <= v;
+      if (v == kDivExpected)
+         passMask <= passMask | 8'h08;
+      state <= ST_SQRT_ENQ;
+   endrule
+
+   rule doSqrtEnq (started && state == ST_SQRT_ENQ);
+      fpSqrt.enq(inputWord[287:256]);
+      state <= ST_SQRT_GET;
+   endrule
+
+   rule doSqrtGet (started && state == ST_SQRT_GET);
+      let v = fpSqrt.first;
+      fpSqrt.deq;
+      sqrtObs <= v;
+      if (v == kSqrtExpected)
+         passMask <= passMask | 8'h10;
+      state <= ST_EXP_ENQ;
+   endrule
+
+   rule doExpEnq (started && state == ST_EXP_ENQ);
+      fpExp.enq(inputWord[319:288]);
+      state <= ST_EXP_GET;
+   endrule
+
+   rule doExpGet (started && state == ST_EXP_GET);
+      let v = fpExp.first;
+      fpExp.deq;
+      expObs <= v;
+      if (v == kExpExpected)
+         passMask <= passMask | 8'h20;
+      state <= ST_FMA_ENQ;
+   endrule
+
+   rule doFmaEnq (started && state == ST_FMA_ENQ);
+      fpFma.enq(inputWord[351:320], inputWord[383:352], inputWord[415:384], True);
+      state <= ST_FMA_GET;
+   endrule
+
+   rule doFmaGet (started && state == ST_FMA_GET);
+      let v = fpFma.first;
+      fpFma.deq;
+      fmaObs <= v;
+      if (v == kFmaExpected)
+         passMask <= passMask | 8'h40;
+      state <= ST_SQRTCUBE_ENQ;
+   endrule
+
+   rule doSqrtCubeEnq (started && state == ST_SQRTCUBE_ENQ);
+      fpSqrtCube.enq(inputWord[447:416]);
+      state <= ST_SQRTCUBE_GET;
+   endrule
+
+   rule doSqrtCubeGet (started && state == ST_SQRTCUBE_GET);
+      let v = fpSqrtCube.first;
+      fpSqrtCube.deq;
+      sqrtCubeObs <= v;
+      if (v == kScubeExpected)
+         passMask <= passMask | 8'h80;
+      state <= ST_PACK_RESULT;
+   endrule
+
+   // --------------------------------------------------------------------------
+   // Pack the result into one 512-bit beat, stage it through a second URAM, and
+   // then write it back through the direct host connection.
+   // --------------------------------------------------------------------------
+   rule packResult (started && state == ST_PACK_RESULT);
+      Bit#(32) hostPass32 = zeroExtend(pack(hostPathPass));
+      Bit#(32) status     = (hostPathPass && (passMask == 8'hFF))
+                              ? 32'd3
+                              : (32'hBAD00000 | zeroExtend(passMask));
+      Bit#(32) cycles     = cycleCounter - cycleStart;
+
+      resultWord <= {
+         32'h00000000,        // lane 15
+         hostPass32,          // lane 14
+         inputWord[511:480],  // lane 13, echo input magic1 after URAM
+         inputWord[479:448],  // lane 12, echo input magic0 after URAM
+         sqrtCubeObs,         // lane 11
+         fmaObs,              // lane 10
+         expObs,              // lane  9
+         sqrtObs,             // lane  8
+         divObs,              // lane  7
+         multObs,             // lane  6
+         subObs,              // lane  5
+         addObs,              // lane  4
+         cycles,              // lane  3
+         zeroExtend(passMask),// lane  2
+         status,              // lane  1
+         kMagic               // lane  0
+      };
+      state <= ST_STORE_RESULT_URAM;
+   endrule
+
+   rule storeResultUram (started && state == ST_STORE_RESULT_URAM);
+      uramOut.portA.request.put(
+         URAMRequest{write: True, responseOnWrite: False, address: 0, datain: resultWord}
+      );
+      state <= ST_REQ_URAM_OUT;
+   endrule
+
+   rule reqReadUramOut (started && state == ST_REQ_URAM_OUT);
+      uramOut.portB.request.put(
+         URAMRequest{write: False, responseOnWrite: False, address: 0, datain: ?}
+      );
+      state <= ST_RECV_URAM_OUT;
+   endrule
+
+   rule recvReadUramOut (started && state == ST_RECV_URAM_OUT);
+      let w <- uramOut.portB.response.get;
+      resultWord <= w;
+      state <= ST_REQ_WRITE;
+   endrule
+
+   rule reqWriteResult (started && state == ST_REQ_WRITE);
+      writeReqQs[1].enq(MemPortReq{addr: 64'd0, bytes: 32'd64});
+      state <= ST_WRITE_WORD;
+   endrule
+
+   rule writeResult (started && state == ST_WRITE_WORD);
+      writeWordQs[1].enq(resultWord);
+      state   <= ST_DONE;
+      started <= False;
+      doneQ.enq(True);
+   endrule
+
+   // --------------------------------------------------------------------------
+   // Interface
+   // --------------------------------------------------------------------------
+   Vector#(MemPortCnt, MemPortIfc) mem_;
+   for (Integer i = 0; i < valueOf(MemPortCnt); i = i + 1) begin
+      mem_[i] = interface MemPortIfc;
+         method ActionValue#(MemPortReq) readReq;
+            let v = readReqQs[i].first;
+            readReqQs[i].deq;
+            return v;
+         endmethod
+
+         method ActionValue#(MemPortReq) writeReq;
+            let v = writeReqQs[i].first;
+            writeReqQs[i].deq;
+            return v;
+         endmethod
+
+         method ActionValue#(Bit#(512)) writeWord;
+            let v = writeWordQs[i].first;
+            writeWordQs[i].deq;
+            return v;
+         endmethod
+
+         method Action readWord(Bit#(512) word);
+            readWordQs[i].enq(word);
+         endmethod
+      endinterface;
+   end
+
+   method Action start(Bit#(32) param) if (!started);
+      startQ.enq(True);
+   endmethod
+
+   method ActionValue#(Bool) done;
+      let v = doneQ.first;
+      doneQ.deq;
+      return v;
+   endmethod
+
+   interface mem = mem_;
 endmodule
