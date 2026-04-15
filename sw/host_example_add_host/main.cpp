@@ -17,9 +17,13 @@ using namespace std;
 
 constexpr unsigned int kDeviceId = 0;
 constexpr size_t kBufferBytes = 4096;
-constexpr uint32_t kMagic = 0x46503332u;      // "FP32"
+constexpr size_t kBeatBytes = 64;
+
+constexpr uint32_t kMagic = 0x46505832u;   // "FPX2"
 constexpr uint32_t kInputMagic0 = 0x13579BDFu;
 constexpr uint32_t kInputMagic1 = 0x2468ACE0u;
+constexpr uint64_t kInputMagic64_0 = 0x0123456789ABCDEFULL;
+constexpr uint64_t kInputMagic64_1 = 0x0FEDCBA987654321ULL;
 
 static uint32_t float_bits(float f) {
   uint32_t u = 0;
@@ -28,9 +32,22 @@ static uint32_t float_bits(float f) {
   return u;
 }
 
+static uint64_t double_bits(double d) {
+  uint64_t u = 0;
+  static_assert(sizeof(u) == sizeof(d));
+  std::memcpy(&u, &d, sizeof(u));
+  return u;
+}
+
 static string hex32(uint32_t v) {
   ostringstream oss;
   oss << "0x" << hex << uppercase << setw(8) << setfill('0') << v;
+  return oss.str();
+}
+
+static string hex64(uint64_t v) {
+  ostringstream oss;
+  oss << "0x" << hex << uppercase << setw(16) << setfill('0') << v;
   return oss.str();
 }
 
@@ -41,8 +58,15 @@ struct Check32 {
   unsigned bit;
 };
 
+struct Check64 {
+  const char* name;
+  uint64_t observed;
+  uint64_t expected;
+  unsigned bit;
+};
+
 static bool test_bit(uint32_t mask, unsigned bit) {
-  return (mask >> bit) & 0x1u;
+  return ((mask >> bit) & 0x1u) != 0;
 }
 
 int main(int argc, char** argv) {
@@ -51,7 +75,8 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  const array<uint32_t, 16> input_lanes{{
+  // Beat 0: Float32 inputs
+  const array<uint32_t, 16> input32{{
       float_bits(1.5f),   // lane 0 : add_a
       float_bits(2.25f),  // lane 1 : add_b
       float_bits(5.5f),   // lane 2 : sub_a
@@ -66,11 +91,35 @@ int main(int argc, char** argv) {
       float_bits(2.0f),   // lane 11: fma_b
       float_bits(0.5f),   // lane 12: fma_c
       float_bits(4.0f),   // lane 13: sqrtcube_a
-      kInputMagic0,       // lane 14: host/URAM path sentinel 0
-      kInputMagic1        // lane 15: host/URAM path sentinel 1
+      kInputMagic0,       // lane 14: 32-bit path sentinel 0
+      kInputMagic1        // lane 15: 32-bit path sentinel 1
   }};
 
-  cout << "[Float32 self-test over direct host connection + URAM]\n";
+  // Beat 1: Float64 inputs for binary ops
+  const array<uint64_t, 8> input64_a{{
+      double_bits(1.5),   // lane 0 : add_a
+      double_bits(2.25),  // lane 1 : add_b
+      double_bits(5.5),   // lane 2 : sub_a
+      double_bits(2.25),  // lane 3 : sub_b
+      double_bits(1.5),   // lane 4 : mul_a
+      double_bits(-2.0),  // lane 5 : mul_b
+      double_bits(7.5),   // lane 6 : div_a
+      double_bits(2.5)    // lane 7 : div_b
+  }};
+
+  // Beat 2: Float64 inputs for unary / ternary ops + sentinels
+  const array<uint64_t, 8> input64_b{{
+      double_bits(9.0),   // lane 0 : sqrt_a
+      double_bits(0.0),   // lane 1 : exp_a
+      double_bits(1.5),   // lane 2 : fma_a
+      double_bits(2.0),   // lane 3 : fma_b
+      double_bits(0.5),   // lane 4 : fma_c
+      double_bits(4.0),   // lane 5 : sqrtcube_a
+      kInputMagic64_0,    // lane 6 : 64-bit path sentinel 0
+      kInputMagic64_1     // lane 7 : 64-bit path sentinel 1
+  }};
+
+  cout << "[Float32 + Float64 self-test over direct host connection + URAM]\n";
   string xclbin_file = argv[1];
 
   xrt::device device{kDeviceId};
@@ -84,13 +133,14 @@ int main(int argc, char** argv) {
   auto boIn  = xrt::bo(device, kBufferBytes, flags, krnl.group_id(1));
   auto boOut = xrt::bo(device, kBufferBytes, flags, krnl.group_id(2));
 
-  auto in  = boIn.map<uint32_t*>();
-  auto out = boOut.map<uint32_t*>();
-  fill(in,  in  + (kBufferBytes / sizeof(uint32_t)), 0u);
-  fill(out, out + (kBufferBytes / sizeof(uint32_t)), 0u);
+  auto inBytes  = boIn.map<uint8_t*>();
+  auto outBytes = boOut.map<uint8_t*>();
+  std::memset(inBytes,  0, kBufferBytes);
+  std::memset(outBytes, 0, kBufferBytes);
 
-  for (size_t i = 0; i < input_lanes.size(); ++i)
-    in[i] = input_lanes[i];
+  std::memcpy(inBytes + 0 * kBeatBytes, input32.data(),   kBeatBytes);
+  std::memcpy(inBytes + 1 * kBeatBytes, input64_a.data(), kBeatBytes);
+  std::memcpy(inBytes + 2 * kBeatBytes, input64_b.data(), kBeatBytes);
 
   cout << "[STEP 3] Sync BOs\n";
   boIn.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -103,57 +153,90 @@ int main(int argc, char** argv) {
   cout << "[STEP 5] Read back results\n";
   boOut.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
-  const uint32_t magic        = out[0];
-  const uint32_t status       = out[1];
-  const uint32_t passMask     = out[2];
-  const uint32_t cycles       = out[3];
-  const uint32_t addObs       = out[4];
-  const uint32_t subObs       = out[5];
-  const uint32_t mulObs       = out[6];
-  const uint32_t divObs       = out[7];
-  const uint32_t sqrtObs      = out[8];
-  const uint32_t expObs       = out[9];
-  const uint32_t fmaObs       = out[10];
-  const uint32_t sqrtCubeObs  = out[11];
-  const uint32_t echoedMagic0 = out[12];
-  const uint32_t echoedMagic1 = out[13];
-  const uint32_t hostPathPass = out[14];
+  array<uint32_t, 16> beat0{};
+  array<uint64_t, 8> beat1{};
+  array<uint64_t, 8> beat2{};
+  std::memcpy(beat0.data(), outBytes + 0 * kBeatBytes, kBeatBytes);
+  std::memcpy(beat1.data(), outBytes + 1 * kBeatBytes, kBeatBytes);
+  std::memcpy(beat2.data(), outBytes + 2 * kBeatBytes, kBeatBytes);
+
+  const uint32_t magic        = beat0[0];
+  const uint32_t status       = beat0[1];
+  const uint32_t passMask     = beat0[2];
+  const uint32_t cycles       = beat0[3];
+  const uint32_t addObs32     = beat0[4];
+  const uint32_t subObs32     = beat0[5];
+  const uint32_t mulObs32     = beat0[6];
+  const uint32_t divObs32     = beat0[7];
+  const uint32_t sqrtObs32    = beat0[8];
+  const uint32_t expObs32     = beat0[9];
+  const uint32_t fmaObs32     = beat0[10];
+  const uint32_t scubeObs32   = beat0[11];
+  const uint32_t echoMagic0   = beat0[12];
+  const uint32_t echoMagic1   = beat0[13];
+  const uint32_t hostPath32   = beat0[14];
+  const uint32_t hostPath64   = beat0[15];
 
   cout << "magic       : " << hex32(magic) << '\n';
   cout << "status      : " << hex32(status) << "  (3 means PASS)\n";
   cout << "passMask    : " << hex32(passMask) << '\n';
   cout << "cycles      : " << dec << cycles << '\n';
-  cout << "host path   : echoed0=" << hex32(echoedMagic0)
-       << " echoed1=" << hex32(echoedMagic1)
-       << " flag=" << hostPathPass << "\n\n";
+  cout << "host path32 : echoed0=" << hex32(echoMagic0)
+       << " echoed1=" << hex32(echoMagic1)
+       << " flag=" << hostPath32 << '\n';
+  cout << "host path64 : echoed0=" << hex64(beat2[0])
+       << " echoed1=" << hex64(beat2[1])
+       << " flag=" << hostPath64 << "\n\n";
 
-  const array<Check32, 8> checks{{
-      {"mkFpAdd32",       addObs,      0x40700000u, 0},
-      {"mkFpSub32",       subObs,      0x40500000u, 1},
-      {"mkFpMult32",      mulObs,      0xC0400000u, 2},
-      {"mkFpDiv32",       divObs,      0x40400000u, 3},
-      {"mkFpSqrt32",      sqrtObs,     0x40400000u, 4},
-      {"mkFpExp32",       expObs,      0x3F800000u, 5},
-      {"mkFpFma32",       fmaObs,      0x40600000u, 6},
-      {"mkFpSqrtCube32",  sqrtCubeObs, 0x41000000u, 7},
+  const array<Check32, 8> checks32{{
+      {"mkFpAdd32",       addObs32,   float_bits(3.75f), 0},
+      {"mkFpSub32",       subObs32,   float_bits(3.25f), 1},
+      {"mkFpMult32",      mulObs32,   float_bits(-3.0f), 2},
+      {"mkFpDiv32",       divObs32,   float_bits(3.0f), 3},
+      {"mkFpSqrt32",      sqrtObs32,  float_bits(3.0f), 4},
+      {"mkFpExp32",       expObs32,   float_bits(1.0f), 5},
+      {"mkFpFma32",       fmaObs32,   float_bits(3.5f), 6},
+      {"mkFpSqrtCube32",  scubeObs32, float_bits(8.0f), 7},
+  }};
+
+  const array<Check64, 8> checks64{{
+      {"mkFpAdd64",       beat1[0], double_bits(3.75),  8},
+      {"mkFpSub64",       beat1[1], double_bits(3.25),  9},
+      {"mkFpMult64",      beat1[2], double_bits(-3.0), 10},
+      {"mkFpDiv64",       beat1[3], double_bits(3.0),  11},
+      {"mkFpSqrt64",      beat1[4], double_bits(3.0),  12},
+      {"mkFpExp64",       beat1[5], double_bits(1.0),  13},
+      {"mkFpFma64",       beat1[6], double_bits(3.5),  14},
+      {"mkFpSqrtCube64",  beat1[7], double_bits(8.0),  15},
   }};
 
   bool all_ok = true;
 
   if (magic != kMagic) {
-    cout << "Unexpected magic. The loaded xclbin does not look like this Float32 self-test build.\n";
+    cout << "Unexpected magic. The loaded xclbin does not look like this Float32/Float64 self-test build.\n";
     all_ok = false;
   }
 
-  const bool host_path_ok =
-      (echoedMagic0 == kInputMagic0) &&
-      (echoedMagic1 == kInputMagic1) &&
-      (hostPathPass == 1u);
+  const bool host_path_32_ok =
+      (echoMagic0 == kInputMagic0) &&
+      (echoMagic1 == kInputMagic1) &&
+      (hostPath32 == 1u);
 
-  cout << "host->URAM->kernel path : " << (host_path_ok ? "OK" : "FAIL") << '\n';
-  all_ok &= host_path_ok;
+  const bool host_path_64_ok =
+      (beat2[0] == kInputMagic64_0) &&
+      (beat2[1] == kInputMagic64_1) &&
+      (hostPath64 == 1u);
 
-  for (const auto& c : checks) {
+  cout << "host->URAM->kernel path (32-bit beat): "
+       << (host_path_32_ok ? "OK" : "FAIL") << '\n';
+  cout << "host->URAM->kernel path (64-bit beat): "
+       << (host_path_64_ok ? "OK" : "FAIL") << '\n';
+
+  all_ok &= host_path_32_ok;
+  all_ok &= host_path_64_ok;
+
+  cout << "\n[Float32 modules]\n";
+  for (const auto& c : checks32) {
     const bool ok = (c.observed == c.expected) && test_bit(passMask, c.bit);
     cout << left << setw(16) << c.name
          << " observed=" << hex32(c.observed)
@@ -164,8 +247,20 @@ int main(int argc, char** argv) {
     all_ok &= ok;
   }
 
+  cout << "\n[Float64 modules]\n";
+  for (const auto& c : checks64) {
+    const bool ok = (c.observed == c.expected) && test_bit(passMask, c.bit);
+    cout << left << setw(16) << c.name
+         << " observed=" << hex64(c.observed)
+         << " expected=" << hex64(c.expected)
+         << " bit=" << c.bit
+         << " " << (ok ? "OK" : "FAIL")
+         << '\n';
+    all_ok &= ok;
+  }
+
   all_ok &= (status == 3u);
-  all_ok &= (passMask == 0xFFu);
+  all_ok &= (passMask == 0xFFFFu);
 
   cout << '\n' << (all_ok ? "TEST PASSED" : "TEST FAILED") << '\n';
   return all_ok ? EXIT_SUCCESS : EXIT_FAILURE;
