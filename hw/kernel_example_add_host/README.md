@@ -1,21 +1,21 @@
-# Float32 Self-Test over Direct Host Connection + URAM
+# Float32 + Float64 Self-Test over Direct Host Connection + URAM
 
-This example turns `kernel_example_add_host` into a compact self-test kernel for the Alveo U50.
-It keeps the original bluevitis/XRT structure, but replaces the original compute stage with a staged validation path for the Float32 library.
+This example turns `kernel_example_add_host` into a compact floating-point self-test kernel for the Alveo U50.
+It keeps the original bluevitis/XRT structure, but replaces the original compute stage with a staged validation path for both the `Float32` and `Float64` libraries.
 
 The example is intentionally small:
 
-- the host writes a single 512-bit input beat
-- the kernel reads that beat through the **direct host connection** on memory port 0
-- the kernel stages the beat through **URAM-backed local storage**
-- the kernel runs a fixed set of 32-bit floating-point operations
-- the kernel writes one 512-bit result beat back through memory port 1
+- the host writes **three 512-bit input beats**
+- the kernel reads those beats through the **direct host connection** on memory port 0
+- the kernel stages the beats through **URAM-backed local storage**
+- the kernel runs a fixed set of **32-bit and 64-bit floating-point operations**
+- the kernel writes **three 512-bit result beats** back through memory port 1
 
 ---
 
 ## What this example tests
 
-This example checks three things at once:
+This example checks four things at once:
 
 1. **Float32 module functionality**
    - `mkFpAdd32`
@@ -27,15 +27,25 @@ This example checks three things at once:
    - `mkFpFma32`
    - `mkFpSqrtCube32`
 
-2. **Direct host-connected kernel memory connectivity**
-   - the host writes one input beat into the input BO
-   - the kernel issues a read on **memory port 0**
-   - the kernel receives one 512-bit word through the host-connected path
-   - the kernel writes one packed result beat back through **memory port 1**
+2. **Float64 module functionality**
+   - `mkFpAdd64`
+   - `mkFpSub64`
+   - `mkFpMult64`
+   - `mkFpDiv64`
+   - `mkFpSqrt64`
+   - `mkFpExp64`
+   - `mkFpFma64`
+   - `mkFpSqrtCube64`
 
-3. **Internal URAM staging inside the kernel**
-   - the input beat is stored into `uramIn` and read back before the Float32 tests start
-   - the result beat is stored into `uramOut` and read back before it is written back to host memory
+3. **Direct host-connected kernel memory connectivity**
+   - the host writes three input beats into the input BO
+   - the kernel issues reads on **memory port 0**
+   - the kernel receives three 512-bit words through the host-connected path
+   - the kernel writes three packed result beats back through **memory port 1**
+
+4. **Internal URAM staging inside the kernel**
+   - the three input beats are stored into `uramIn` and read back before the floating-point tests start
+   - the three result beats are stored into `uramOut` and read back before they are written back to host memory
 
 So this is not just a floating-point logic demo.
 It also confirms that the **host ↔ direct host memory path ↔ kernel ↔ URAM** data path is correctly wired.
@@ -53,55 +63,53 @@ The build configuration maps the two kernel memory ports as follows:
 - `kernel_1.in -> HOST[0]`
 - `kernel_1.out -> HOST[0]`
 
-Inside `KernelTop.bsv`, port 0 is driven from `mem_addr` and port 1 is driven from `file_addr`, so the kernel still sees two independent memory interfaces even though both are connected to the host-backed memory path. In practical terms:
+Inside `KernelTop.bsv`, port 0 is driven from `mem_addr` and port 1 is driven from `file_addr`, so the kernel still sees two independent memory interfaces even though both are connected to the same host-backed memory path.
+
+In practical terms:
 
 - the **input buffer object** is attached to the host-connected input path on port 0
 - the **output buffer object** is attached to the host-connected output path on port 1
 
 ### How much memory does the example actually touch?
 
-The host allocates **4096 bytes** for the input BO and **4096 bytes** for the output BO, but the current self-test uses only the **first 64-byte beat** on each side.
+The host allocates **4096 bytes** for the input BO and **4096 bytes** for the output BO, but the current self-test uses only the **first three 64-byte beats** on each side.
 
 In the current example:
 
-- the host writes a single 512-bit test word into the first beat of `boIn`
-- the kernel reads only that first 64-byte beat
-- the kernel writes only one 64-byte result beat to `boOut`
-- all other bytes remain unused
+- the host writes **3 × 64 B = 192 B** of input data
+- the kernel reads only those first three 64-byte beats
+- the kernel writes only three 64-byte result beats
+- all remaining bytes in the BOs are unused
 
 That means this example is **not a bandwidth test** and **not a large host-memory capacity test**.
-It is a minimal functional test of a direct host-connected kernel path with URAM staging in the middle.
+It is a compact functional test of a direct host-connected kernel path with URAM staging in the middle.
 
 ---
 
 ## Prerequisite: generate the floating-point IP cores first
 
 This example depends on pre-generated floating-point IP cores from `bluelibrary`.
-Before building the hardware example, generate the U50-targeted floating-point core set:
+Before building the hardware example, make sure the U50-targeted floating-point core set has been generated.
+
+In the updated local flow, this is done by running:
 
 ```bash
 cd ../../../bluelibrary/core
 bash gen-u50.sh
 ```
 
-This generates the U50 floating-point IP set under `bluelibrary/core/u50/`.
-The current generation flow covers the single-precision cores expected by `Float32.bsv`, including:
+This example assumes that your local `gen-u50.sh` flow generates the required U50 floating-point IP cores for both:
 
-- `fp_add32`
-- `fp_sub32`
-- `fp_mult32`
-- `fp_div32`
-- `fp_sqrt32`
-- `fp_fma32`
-- `fp_exp32`
+- the **32-bit** operators used by `Float32.bsv`
+- the **64-bit** operators used by `Float64.bsv`
 
-After generation, your packaging flow must also import the generated `.xci` files into the Vivado project, typically through `fp_import.tcl` in `package_kernel.tcl`.
+After generation, your packaging flow must also import the generated `.xci` files into the Vivado project, typically through `fp_import.tcl` inside `package_kernel.tcl`.
 
 If you see errors such as:
 
 ```text
 Module <fp_add32> not found
-Module <fp_div32> not found
+Module <fp_div64> not found
 ```
 
 then the floating-point cores were either not generated yet, or they were not imported into the packaging project.
@@ -110,83 +118,37 @@ then the floating-point cores were either not generated yet, or they were not im
 
 ## Module behavior summary
 
-### `mkFpAdd32`
-`mkFpAdd32` performs one single-precision floating-point addition.
+### Float32 modules
 
-In this example:
+This example uses the following 32-bit floating-point test vectors and expected results:
 
-- input = `1.5 + 2.25`
-- expected result = `3.75`
-- expected bits = `0x40700000`
+- `mkFpAdd32`      : `1.5 + 2.25 = 3.75`      → `0x40700000`
+- `mkFpSub32`      : `5.5 - 2.25 = 3.25`      → `0x40500000`
+- `mkFpMult32`     : `1.5 * (-2.0) = -3.0`    → `0xC0400000`
+- `mkFpDiv32`      : `7.5 / 2.5 = 3.0`        → `0x40400000`
+- `mkFpSqrt32`     : `sqrt(9.0) = 3.0`        → `0x40400000`
+- `mkFpExp32`      : `exp(0.0) = 1.0`         → `0x3F800000`
+- `mkFpFma32`      : `(1.5 * 2.0) + 0.5 = 3.5`→ `0x40600000`
+- `mkFpSqrtCube32` : `4.0 * sqrt(4.0) = 8.0`  → `0x41000000`
 
-### `mkFpSub32`
-`mkFpSub32` performs one single-precision floating-point subtraction.
+### Float64 modules
 
-In this example:
+This example uses the following 64-bit floating-point test vectors and expected results:
 
-- input = `5.5 - 2.25`
-- expected result = `3.25`
-- expected bits = `0x40500000`
-
-### `mkFpMult32`
-`mkFpMult32` performs one single-precision floating-point multiplication.
-
-In this example:
-
-- input = `1.5 * (-2.0)`
-- expected result = `-3.0`
-- expected bits = `0xC0400000`
-
-### `mkFpDiv32`
-`mkFpDiv32` performs one single-precision floating-point division.
-
-In this example:
-
-- input = `7.5 / 2.5`
-- expected result = `3.0`
-- expected bits = `0x40400000`
-
-### `mkFpSqrt32`
-`mkFpSqrt32` performs one single-precision floating-point square root.
-
-In this example:
-
-- input = `9.0`
-- expected result = `3.0`
-- expected bits = `0x40400000`
-
-### `mkFpExp32`
-`mkFpExp32` performs one single-precision exponential.
-
-In this example:
-
-- input = `0.0`
-- expected result = `1.0`
-- expected bits = `0x3F800000`
-
-### `mkFpFma32`
-`mkFpFma32` performs a fused multiply-add/subtract style operation.
-
-In this example the addition path is used:
-
-- input = `(1.5 * 2.0) + 0.5`
-- expected result = `3.5`
-- expected bits = `0x40600000`
-
-### `mkFpSqrtCube32`
-`mkFpSqrtCube32` computes `a * sqrt(a)`.
-
-In this example:
-
-- input = `4.0`
-- expected result = `8.0`
-- expected bits = `0x41000000`
+- `mkFpAdd64`      : `1.5 + 2.25 = 3.75`      → `0x400E000000000000`
+- `mkFpSub64`      : `5.5 - 2.25 = 3.25`      → `0x400A000000000000`
+- `mkFpMult64`     : `1.5 * (-2.0) = -3.0`    → `0xC008000000000000`
+- `mkFpDiv64`      : `7.5 / 2.5 = 3.0`        → `0x4008000000000000`
+- `mkFpSqrt64`     : `sqrt(9.0) = 3.0`        → `0x4008000000000000`
+- `mkFpExp64`      : `exp(0.0) = 1.0`         → `0x3FF0000000000000`
+- `mkFpFma64`      : `(1.5 * 2.0) + 0.5 = 3.5`→ `0x400C000000000000`
+- `mkFpSqrtCube64` : `4.0 * sqrt(4.0) = 8.0`  → `0x4020000000000000`
 
 ---
 
 ## End-to-end flow of the example
 
-### 1. Host prepares one 512-bit input word
+### 1. Host prepares three 512-bit input beats
 
 The host allocates:
 
@@ -194,7 +156,9 @@ The host allocates:
 - `boOut` for the output/result memory path
 
 Both are created as **host-only XRT BOs**.
-The host then fills the first 512-bit input beat as 16 lanes of 32 bits each:
+The host then fills three 512-bit beats.
+
+#### Beat 0: Float32 inputs (16 lanes of 32 bits)
 
 | Lane | Meaning |
 |---|---|
@@ -212,8 +176,34 @@ The host then fills the first 512-bit input beat as 16 lanes of 32 bits each:
 | 11 | `fma_b = 2.0` |
 | 12 | `fma_c = 0.5` |
 | 13 | `sqrtcube_a = 4.0` |
-| 14 | host-path sentinel 0 = `0x13579BDF` |
-| 15 | host-path sentinel 1 = `0x2468ACE0` |
+| 14 | 32-bit host-path sentinel 0 = `0x13579BDF` |
+| 15 | 32-bit host-path sentinel 1 = `0x2468ACE0` |
+
+#### Beat 1: Float64 binary-op inputs (8 lanes of 64 bits)
+
+| Lane | Meaning |
+|---|---|
+| 0 | `add_a = 1.5` |
+| 1 | `add_b = 2.25` |
+| 2 | `sub_a = 5.5` |
+| 3 | `sub_b = 2.25` |
+| 4 | `mul_a = 1.5` |
+| 5 | `mul_b = -2.0` |
+| 6 | `div_a = 7.5` |
+| 7 | `div_b = 2.5` |
+
+#### Beat 2: Float64 unary / ternary inputs + sentinels (8 lanes of 64 bits)
+
+| Lane | Meaning |
+|---|---|
+| 0 | `sqrt_a = 9.0` |
+| 1 | `exp_a = 0.0` |
+| 2 | `fma_a = 1.5` |
+| 3 | `fma_b = 2.0` |
+| 4 | `fma_c = 0.5` |
+| 5 | `sqrtcube_a = 4.0` |
+| 6 | 64-bit host-path sentinel 0 = `0x0123456789ABCDEF` |
+| 7 | 64-bit host-path sentinel 1 = `0x0FEDCBA987654321` |
 
 ### 2. Host launches the kernel
 
@@ -225,28 +215,35 @@ The host launches the kernel with the usual ABI:
 
 The scalar value is not used for the arithmetic itself.
 
-### 3. Kernel reads the input beat from port 0
+### 3. Kernel reads the three input beats from port 0
 
 Inside `KernelMain.bsv`, the kernel:
 
-- issues a **64-byte read request** on memory port 0
-- waits for one 512-bit word to return
-- stores that word into `uramIn`
+- issues three **64-byte read requests** on memory port 0
+- waits for three 512-bit words to return
+- stores those words into `uramIn`
 
 This is the explicit direct-host input step.
 
 ### 4. Kernel validates the host-to-URAM path
 
-Before running any floating-point operation, the kernel reads the staged input word back from `uramIn` and checks that the two sentinel lanes are still intact:
+Before running any floating-point operation, the kernel reads the staged input beats back from `uramIn` and checks that the sentinel values are still intact.
 
-- lane 14 must still be `0x13579BDF`
-- lane 15 must still be `0x2468ACE0`
+For the 32-bit path:
+
+- beat 0 lane 14 must still be `0x13579BDF`
+- beat 0 lane 15 must still be `0x2468ACE0`
+
+For the 64-bit path:
+
+- beat 2 lane 6 must still be `0x0123456789ABCDEF`
+- beat 2 lane 7 must still be `0x0FEDCBA987654321`
 
 This is the explicit **host → direct host connection → kernel → URAM** validation step.
 
 ### 5. Kernel runs all Float32 module tests sequentially
 
-Using the URAM-returned input word, the kernel runs:
+Using the URAM-returned beat 0, the kernel runs:
 
 1. `mkFpAdd32`
 2. `mkFpSub32`
@@ -258,95 +255,132 @@ Using the URAM-returned input word, the kernel runs:
 8. `mkFpSqrtCube32`
 
 Each observed output is compared against a fixed expected 32-bit bit pattern.
-If a module matches, the corresponding bit in `passMask` is set.
+If the result matches, the corresponding low-half `passMask` bit is set.
 
-### 6. Kernel packs the result word
+### 6. Kernel runs all Float64 module tests sequentially
 
-After all tests complete, the kernel packs a single 512-bit result word containing:
+Using the URAM-returned beats 1 and 2, the kernel runs:
 
-- a magic signature
-- a status word
-- a pass mask
-- cycle count
-- all observed Float32 outputs
-- the two echoed sentinel values
-- the final host-path pass flag
+1. `mkFpAdd64`
+2. `mkFpSub64`
+3. `mkFpMult64`
+4. `mkFpDiv64`
+5. `mkFpSqrt64`
+6. `mkFpExp64`
+7. `mkFpFma64`
+8. `mkFpSqrtCube64`
 
-### 7. Kernel stages the result through a second URAM
+Each observed output is compared against a fixed expected 64-bit bit pattern.
+If the result matches, the corresponding high-half `passMask` bit is set.
 
-Before writing the result back to host memory, the kernel stores the result word into `uramOut` and reads it back once more.
+### 7. Kernel packs three result beats
 
-This gives the example a symmetric structure:
+After all tests complete, the kernel packs the observations into three 512-bit result beats.
 
-- input word staged through URAM before compute
-- output word staged through URAM before write-back
+#### Result beat 0: summary + Float32 observations (16 lanes of 32 bits)
 
-### 8. Kernel writes the result to port 1
+| Lane | Meaning |
+|---|---|
+| 0 | magic = `0x46505832` (`"FPX2"`) |
+| 1 | status (`3` means overall PASS) |
+| 2 | `passMask` |
+| 3 | elapsed cycles |
+| 4 | observed `mkFpAdd32` |
+| 5 | observed `mkFpSub32` |
+| 6 | observed `mkFpMult32` |
+| 7 | observed `mkFpDiv32` |
+| 8 | observed `mkFpSqrt32` |
+| 9 | observed `mkFpExp32` |
+| 10 | observed `mkFpFma32` |
+| 11 | observed `mkFpSqrtCube32` |
+| 12 | echoed 32-bit sentinel 0 |
+| 13 | echoed 32-bit sentinel 1 |
+| 14 | 32-bit host-path pass flag |
+| 15 | 64-bit host-path pass flag |
 
-The kernel issues a **64-byte write request** on memory port 1 and writes the single 512-bit result beat back to the output BO.
+#### Result beat 1: Float64 observations (8 lanes of 64 bits)
 
-### 9. Host checks all observed values
+| Lane | Meaning |
+|---|---|
+| 0 | observed `mkFpAdd64` |
+| 1 | observed `mkFpSub64` |
+| 2 | observed `mkFpMult64` |
+| 3 | observed `mkFpDiv64` |
+| 4 | observed `mkFpSqrt64` |
+| 5 | observed `mkFpExp64` |
+| 6 | observed `mkFpFma64` |
+| 7 | observed `mkFpSqrtCube64` |
+
+#### Result beat 2: echoed 64-bit sentinels (8 lanes of 64 bits)
+
+| Lane | Meaning |
+|---|---|
+| 0 | echoed 64-bit sentinel 0 |
+| 1 | echoed 64-bit sentinel 1 |
+| 2-7 | zero |
+
+### 8. Kernel stages the result through URAM and writes it back
+
+Before writing the results back to host memory, the kernel stores the three result beats into `uramOut`, reads them back, and only then issues three **64-byte write requests** on memory port 1.
+
+This makes the output path symmetric with the input path:
+
+- host memory → kernel port 0 → `uramIn` → floating-point modules
+- floating-point modules → `uramOut` → kernel port 1 → host memory
+
+### 9. Host reads the result and validates everything
 
 The host:
 
 - syncs `boOut` back from device memory
-- reads the result lanes
+- reads the three result beats
 - checks the magic value
-- checks the host-path sentinel echo and pass flag
-- checks every Float32 module result against a software-side expected bit pattern
-- reports `TEST PASSED` only if everything matches
+- checks the two host-path flags
+- checks all 8 Float32 results
+- checks all 8 Float64 results
+- checks that `passMask == 0xFFFF`
+- reports `TEST PASSED` only if every check succeeds
 
 ---
 
-## Output word format
+## Expected results
 
-The kernel writes one 512-bit output word as 16 lanes of 32 bits each.
+### Expected summary values
 
-| Lane | Meaning |
-|---|---|
-| 0 | magic = `0x46503332` (`"FP32"`) |
-| 1 | status (`3` means overall PASS) |
-| 2 | `passMask` |
-| 3 | elapsed cycles |
-| 4 | observed result from `mkFpAdd32` |
-| 5 | observed result from `mkFpSub32` |
-| 6 | observed result from `mkFpMult32` |
-| 7 | observed result from `mkFpDiv32` |
-| 8 | observed result from `mkFpSqrt32` |
-| 9 | observed result from `mkFpExp32` |
-| 10 | observed result from `mkFpFma32` |
-| 11 | observed result from `mkFpSqrtCube32` |
-| 12 | echoed sentinel 0 after the URAM input path |
-| 13 | echoed sentinel 1 after the URAM input path |
-| 14 | host-path pass flag |
-| 15 | zero |
+- magic = `0x46505832`
+- status = `3`
+- `passMask = 0x0000FFFF`
+- 32-bit host-path flag = `1`
+- 64-bit host-path flag = `1`
 
----
+### Expected Float32 observations
 
-## Expected test vectors and expected results
+- `mkFpAdd32`      → `0x40700000`
+- `mkFpSub32`      → `0x40500000`
+- `mkFpMult32`     → `0xC0400000`
+- `mkFpDiv32`      → `0x40400000`
+- `mkFpSqrt32`     → `0x40400000`
+- `mkFpExp32`      → `0x3F800000`
+- `mkFpFma32`      → `0x40600000`
+- `mkFpSqrtCube32` → `0x41000000`
 
-### Floating-point test cases
+### Expected Float64 observations
 
-- `1.5 + 2.25 = 3.75` → `0x40700000`
-- `5.5 - 2.25 = 3.25` → `0x40500000`
-- `1.5 * (-2.0) = -3.0` → `0xC0400000`
-- `7.5 / 2.5 = 3.0` → `0x40400000`
-- `sqrt(9.0) = 3.0` → `0x40400000`
-- `exp(0.0) = 1.0` → `0x3F800000`
-- `(1.5 * 2.0) + 0.5 = 3.5` → `0x40600000`
-- `4.0 * sqrt(4.0) = 8.0` → `0x41000000`
+- `mkFpAdd64`      → `0x400E000000000000`
+- `mkFpSub64`      → `0x400A000000000000`
+- `mkFpMult64`     → `0xC008000000000000`
+- `mkFpDiv64`      → `0x4008000000000000`
+- `mkFpSqrt64`     → `0x4008000000000000`
+- `mkFpExp64`      → `0x3FF0000000000000`
+- `mkFpFma64`      → `0x400C000000000000`
+- `mkFpSqrtCube64` → `0x4020000000000000`
 
-### Host-path sentinels
+### Expected echoed sentinels
 
-- sentinel 0 = `0x13579BDF`
-- sentinel 1 = `0x2468ACE0`
-
-### Expected pass state
-
-- `magic = 0x46503332`
-- `status = 3`
-- `passMask = 0xFF`
-- `hostPathPass = 1`
+- 32-bit sentinel 0 → `0x13579BDF`
+- 32-bit sentinel 1 → `0x2468ACE0`
+- 64-bit sentinel 0 → `0x0123456789ABCDEF`
+- 64-bit sentinel 1 → `0x0FEDCBA987654321`
 
 ---
 
@@ -358,6 +392,7 @@ The kernel writes one 512-bit output word as 16 lanes of 32 bits each.
 - `hw/kernel_example_add_host/KernelMain.bsv`
 - `hw/kernel_example_add_host/u50.cfg`
 - `bluelibrary/bsv/Float32.bsv`
+- `bluelibrary/bsv/Float64.bsv`
 - `bluelibrary/bsv/URAM.bsv`
 
 ### Software
@@ -368,6 +403,7 @@ The kernel writes one 512-bit output word as 16 lanes of 32 bits each.
 
 - `bluelibrary/core/gen-u50.sh`
 - `bluelibrary/core/synth-fp-u50.tcl`
+- `bluelibrary/core/synth-fp-double-u50.tcl`
 - `bluelibrary/core/fp_import.tcl`
 
 ---
@@ -376,15 +412,16 @@ The kernel writes one 512-bit output word as 16 lanes of 32 bits each.
 
 This example is intentionally compact, but it demonstrates several useful things at once:
 
-- how to use the **direct host connection** as the kernel memory backend
-- how to stage host-provided data through **URAM-backed local storage**
-- how to exercise multiple Float32 modules from one fixed input beat
-- how to package module-level results into one compact return word
-- how to validate vendor-IP-backed floating-point modules in a realistic bluevitis flow
-- how to debug both arithmetic correctness and memory-path correctness in one self-test
+- how to connect a bluevitis kernel to the **direct host memory path**
+- how to read multiple AXI memory beats into Bluespec logic
+- how to stage input and output through **URAM-backed local storage**
+- how to validate both **Float32** and **Float64** arithmetic modules in one self-test kernel
+- how to return compact, structured results to host memory
+- how to validate hardware behavior against fixed host-side golden values
 
-It is a good starting point for larger kernels where:
+It is a good starting point for larger host-connected kernels where:
 
-- floating-point operators are mixed with host-fed control or parameter blocks
-- local URAM staging is needed between memory and compute
-- a small deterministic self-test is useful before integrating a larger data path
+- a small number of structured input beats are read from host-visible memory
+- the compute path mixes 32-bit and 64-bit arithmetic
+- local on-chip staging is useful before or after the compute phase
+- and the result needs to be reported back in a simple, debuggable format
