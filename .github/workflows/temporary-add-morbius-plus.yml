@@ -1,0 +1,71 @@
+name: Temporary Add Morbius Plus to blueVitis
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/temporary-add-morbius-plus.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  add-morbius-plus:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out blueVitis
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check out Morbius+
+        uses: actions/checkout@v4
+        with:
+          repository: SeMinLim/morbius_plus
+          ref: main
+          path: _morbius_plus
+
+      - name: Install Morbius+ kernel and host
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d _morbius_plus/morbius_plus_accel/kernel_morbius_plus
+          test -d _morbius_plus/morbius_plus_accel/host_morbius_plus
+
+          rm -rf hw/kernel_morbius_plus sw/host_morbius_plus
+          cp -a _morbius_plus/morbius_plus_accel/kernel_morbius_plus hw/kernel_morbius_plus
+          cp -a _morbius_plus/morbius_plus_accel/host_morbius_plus sw/host_morbius_plus
+          rm -rf _morbius_plus
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          makefile = Path("hw/kernel_morbius_plus/makefile_us_alveo.mk")
+          text = makefile.read_text()
+          old = "HOSTDIR := ../host_morbius_plus"
+          new = "HOSTDIR := ../../sw/host_morbius_plus"
+          if old not in text:
+              raise RuntimeError("Unexpected Morbius+ HOSTDIR definition")
+          makefile.write_text(text.replace(old, new))
+
+          readme = Path("README.md")
+          text = readme.read_text()
+          entry = "* hw/kernel_morbius_plus & sw/host_morbius_plus: Morbius+ CPU-FPGA heterogeneous motif-discovery prototype for Alveo U50.\n"
+          if entry not in text:
+              marker = "## Notes\n"
+              if marker not in text:
+                  raise RuntimeError("README Notes marker was not found")
+              text = text.replace(marker, entry + "\n" + marker)
+          readme.write_text(text)
+          PY
+
+          rm .github/workflows/temporary-add-morbius-plus.yml
+
+          git config user.name 'OpenAI Assistant'
+          git config user.email 'assistant@openai.com'
+          git add -A
+          git commit -m 'Add Morbius Plus kernel and host'
+          git push origin main
