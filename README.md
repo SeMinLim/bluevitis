@@ -45,8 +45,6 @@ To prevent caching issues or to free up disk space, use the provided clean targe
 * hw/kernel_example_add_host & sw/host_example_add_host: simple example that uses direct host connection and URAM
 * hw/kernel_example_add_plram_uram & sw/host_example_add_plram_uram: simple example that uses URAM-mapped PLRAM connection
 * hw/kernel_example_add_plram_bram & sw/host_example_add_plram_bram: simple example that uses BRAM-mapped PLRAM connection
-
-
 * hw/kernel_morbius_plus & sw/host_morbius_plus: Morbius+ CPU-FPGA heterogeneous motif-discovery prototype for Alveo U50.
 
 ## Notes
