@@ -47,6 +47,8 @@ To prevent caching issues or to free up disk space, use the provided clean targe
 * hw/kernel_example_add_plram_bram & sw/host_example_add_plram_bram: simple example that uses BRAM-mapped PLRAM connection
 
 
+* hw/kernel_morbius_plus & sw/host_morbius_plus: Morbius+ CPU-FPGA heterogeneous motif-discovery prototype for Alveo U50.
+
 ## Notes
 * Maintained by Se-Min Lim
 * Developed in Vitis 2025.2, tested on Alveo U50
