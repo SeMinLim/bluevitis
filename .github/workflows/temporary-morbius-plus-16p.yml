@@ -1,0 +1,307 @@
+name: Temporary Morbius+ 16-pipeline update
+
+on:
+  push:
+    paths:
+      - .github/workflows/temporary-morbius-plus-16p.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply 16-pipeline host and protocol configuration
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+          host = root / 'sw' / 'host_morbius_plus'
+          hw = root / 'hw' / 'kernel_morbius_plus'
+
+          def read(path):
+              return path.read_text(encoding='utf-8')
+
+          def write(path, text):
+              path.write_text(text, encoding='utf-8')
+
+          def replace_once(path, old, new):
+              text = read(path)
+              if old in text:
+                  text = text.replace(old, new, 1)
+                  write(path, text)
+              elif new not in text:
+                  raise RuntimeError(f'Missing expected text in {path}: {old!r}')
+
+          def replace_all(path, old, new):
+              text = read(path)
+              if old in text:
+                  text = text.replace(old, new)
+                  write(path, text)
+              elif new not in text:
+                  raise RuntimeError(f'Missing expected text in {path}: {old!r}')
+
+          def replace_regex(path, pattern, replacement, marker):
+              text = read(path)
+              if marker in text:
+                  return
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise RuntimeError(f'Pattern replacement failed in {path}: {pattern}')
+              write(path, updated)
+
+          # Hardware configuration and accidental literal-tab cleanup.
+          types = hw / 'MorbiusTypes.bsv'
+          replace_once(types, 'typedef 4 NumPipeline;', 'typedef 16 NumPipeline;')
+          replace_once(types, 'typedef 8 NumPE_Profiler;', 'typedef 128 NumPE_Profiler;')
+          replace_once(types, 'typedef 4 NumPE_LPM;', 'typedef 4 NumPE_LPM;')
+
+          for path in hw.glob('*.bsv'):
+              lines = []
+              changed = False
+              for line in read(path).splitlines(keepends=True):
+                  prefix = ''
+                  while line.startswith('\\t'):
+                      prefix += '\t'
+                      line = line[2:]
+                      changed = True
+                  lines.append(prefix + line)
+              if changed:
+                  write(path, ''.join(lines))
+
+          header = host / 'MorbiusPlus.h'
+          replace_once(header, '#define DEFAULTNUMPIPELINE 4', '#define DEFAULTNUMPIPELINE 16')
+          replace_once(header, '#define ACCELMAXPIPELINE 4', '#define ACCELMAXPIPELINE 16')
+          replace_once(header, '#define ACCELSEGMENTSIZE 8', '#define ACCELSEGMENTSIZE 128')
+          replace_once(header, '#define ACCELPROTOCOLVERSION 1', '#define ACCELPROTOCOLVERSION 2')
+          beat_marker = '#define ACCELRESULTBYTES (ACCELRESULTBEATNUM * ACCELBEATBYTES)'
+          if beat_marker not in read(header):
+              replace_once(
+                  header,
+                  '#define ACCELBEATBYTES 64',
+                  '#define ACCELBEATBYTES 64\n'
+                  '#define ACCELPIPELINEPERRESULTBEAT 4\n'
+                  '#define ACCELRESULTBEATNUM (ACCELMAXPIPELINE / ACCELPIPELINEPERRESULTBEAT)\n'
+                  '#define ACCELRESULTBYTES (ACCELRESULTBEATNUM * ACCELBEATBYTES)'
+              )
+
+          protocol = host / 'AcceleratorProtocol.cpp'
+          result_parser = r'''// Parse one per-sequence result group
+          void parseResultBeat( const uint8_t *resultGroup,
+          \t\t      vector<AccelWireResult> &results ) {
+          \tresults.resize(ACCELMAXPIPELINE);
+          \tfor ( int beatIdx = 0; beatIdx < ACCELRESULTBEATNUM; beatIdx ++ ) {
+          \t\tconst uint8_t *beat = resultGroup + (size_t)beatIdx * ACCELBEATBYTES;
+          \t\tif ( readUInt32(beat + 0) != ACCELRESULTMAGIC ||
+          \t\t     readUInt16(beat + 4) != ACCELPROTOCOLVERSION ||
+          \t\t     beat[6] != (uint8_t)beatIdx ) {
+          \t\t\tprintf( "Invalid Morbius+ accelerator result beat: %d.\\n", beatIdx );
+          \t\t\texit(1);
+          \t\t}
+          \t\tfor ( int slotIdx = 0; slotIdx < ACCELPIPELINEPERRESULTBEAT; slotIdx ++ ) {
+          \t\t\tint pipelineIdx = beatIdx * ACCELPIPELINEPERRESULTBEAT + slotIdx;
+          \t\t\tsize_t base = 64 + (size_t)slotIdx * 96;
+          \t\t\tresults[(size_t)pipelineIdx].newOffset = getBits(beat, base + 0, 11);
+          \t\t\tresults[(size_t)pipelineIdx].bestUpdate = getBits(beat, base + 11, 1) != 0;
+          \t\t\tresults[(size_t)pipelineIdx].terminated = getBits(beat, base + 12, 1) != 0;
+          \t\t\tresults[(size_t)pipelineIdx].active = getBits(beat, base + 13, 1) != 0;
+          \t\t\tresults[(size_t)pipelineIdx].bestScore = getBits(beat, base + 16, 32);
+          \t\t\tresults[(size_t)pipelineIdx].updateNum = getBits(beat, base + 48, 32);
+          \t\t}
+          \t}
+          }
+
+          // Parse one fixed-position summary beat'''
+          replace_regex(
+              protocol,
+              r'// Parse one per-sequence result beat\nvoid parseResultBeat\(.*?\n\}\n\n// Parse one fixed-position summary beat',
+              result_parser,
+              '// Parse one per-sequence result group'
+          )
+          text = read(protocol)
+          old_summary = '''\tfor ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
+          \t\tsummary->bestScore[pipelineIdx] = readUInt32(beat + 24 + pipelineIdx * 8);
+          \t\tsummary->terminated[pipelineIdx] = (beat[28 + pipelineIdx * 8] & 0x1U) != 0;
+          \t}
+          '''
+          new_summary = '''\tfor ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
+          \t\tsummary->bestScore[pipelineIdx] = 0;
+          \t\tsummary->terminated[pipelineIdx] = false;
+          \t}
+          '''
+          if old_summary in text:
+              write(protocol, text.replace(old_summary, new_summary, 1))
+          elif new_summary not in text:
+              raise RuntimeError('Summary parser update failed')
+
+          orchestrator = host / 'HostOrchestrator.cpp'
+          replace_all(
+              orchestrator,
+              'executor(input, 2 * ACCELBEATBYTES, output, executorContext)',
+              'executor(input, ACCELRESULTBYTES + ACCELBEATBYTES, output, executorContext)'
+          )
+          replace_once(
+              orchestrator,
+              'parseSummaryBeat(output.data() + ACCELBEATBYTES, &summary);',
+              'parseSummaryBeat(output.data() + ACCELRESULTBYTES, &summary);'
+          )
+          replace_once(
+              orchestrator,
+              'size_t outputSize = (batchNum + 1) * ACCELBEATBYTES;',
+              'size_t outputSize = batchNum * ACCELRESULTBYTES + ACCELBEATBYTES;'
+          )
+          replace_once(
+              orchestrator,
+              'parseSummaryBeat(output.data() + batchNum * ACCELBEATBYTES, &summary);',
+              'parseSummaryBeat(output.data() + batchNum * ACCELRESULTBYTES, &summary);'
+          )
+          replace_once(
+              orchestrator,
+              'parseResultBeat(output.data() + (size_t)itemIdx * ACCELBEATBYTES, wireResults);',
+              'parseResultBeat(output.data() + (size_t)itemIdx * ACCELRESULTBYTES, wireResults);'
+          )
+
+          model = host / 'AcceleratorModel.cpp'
+          replace_once(model, '#include <algorithm>\n#include <vector>', '#include <algorithm>\n#include <array>\n#include <vector>')
+          selector = r'''static uint32_t selectLocalCandidateModel( const uint32_t *weight,
+          \t\t\t\t\t   uint32_t totalMass,
+          \t\t\t\t\t   uint32_t randomFraction,
+          \t\t\t\t\t   uint32_t validNum ) {
+          \tuint64_t product = (uint64_t)totalMass * (uint64_t)randomFraction;
+          \tuint32_t threshold = (uint32_t)(product >> 24);
+          \tuint32_t cumulative = 0;
+          \tfor ( uint32_t localIdx = 0; localIdx < validNum; localIdx ++ ) {
+          \t\tuint32_t nextCumulative = cumulative + weight[localIdx];
+          \t\tif ( nextCumulative > threshold || localIdx + 1 == validNum ) return localIdx;
+          \t\tcumulative = nextCumulative;
+          \t}
+          \treturn 0;
+          }
+
+          static uint32_t sampleCandidateModel'''
+          replace_regex(
+              model,
+              r'static uint32_t selectLocalCandidateModel\(.*?\n\}\n\nstatic uint32_t sampleCandidateModel',
+              selector,
+              'static uint32_t selectLocalCandidateModel( const uint32_t *weight'
+          )
+          replace_once(
+              model,
+              'uint32_t logProb[ACCELSEGMENTSIZE] = {0, 0, 0, 0, 0, 0, 0, 0};\n\t\tuint32_t weight[ACCELSEGMENTSIZE] = {0, 0, 0, 0, 0, 0, 0, 0};',
+              'array<uint32_t, ACCELSEGMENTSIZE> logProb = {};\n\t\tarray<uint32_t, ACCELSEGMENTSIZE> weight = {};'
+          )
+          replace_once(
+              model,
+              'uint32_t localOffset = selectLocalCandidateModel(weight,',
+              'uint32_t localOffset = selectLocalCandidateModel(weight.data(),'
+          )
+          result_packer = r'''static void packResultModel( uint8_t *resultGroup,
+          \t\t\t     uint16_t itemIdx,
+          \t\t\t     const AccelWireResult result[ACCELMAXPIPELINE],
+          \t\t\t     bool allDone,
+          \t\t\t     int bestPipelineIdx ) {
+          \t(void)itemIdx;
+          \t(void)allDone;
+          \t(void)bestPipelineIdx;
+          \tfor ( int beatIdx = 0; beatIdx < ACCELRESULTBEATNUM; beatIdx ++ ) {
+          \t\tuint8_t *word = resultGroup + (size_t)beatIdx * ACCELBEATBYTES;
+          \t\twriteUInt32Model(word + 0, ACCELRESULTMAGIC);
+          \t\twriteUInt16Model(word + 4, ACCELPROTOCOLVERSION);
+          \t\tword[6] = (uint8_t)beatIdx;
+          \t\tfor ( int slotIdx = 0; slotIdx < ACCELPIPELINEPERRESULTBEAT; slotIdx ++ ) {
+          \t\t\tint pipelineIdx = beatIdx * ACCELPIPELINEPERRESULTBEAT + slotIdx;
+          \t\t\tsize_t base = 64 + (size_t)slotIdx * 96;
+          \t\t\tsetBitsModel(word, base + 0, result[pipelineIdx].newOffset, 11);
+          \t\t\tsetBitsModel(word, base + 11, result[pipelineIdx].bestUpdate ? 1 : 0, 1);
+          \t\t\tsetBitsModel(word, base + 12, result[pipelineIdx].terminated ? 1 : 0, 1);
+          \t\t\tsetBitsModel(word, base + 13, result[pipelineIdx].active ? 1 : 0, 1);
+          \t\t\tsetBitsModel(word, base + 16, result[pipelineIdx].bestScore, 32);
+          \t\t\tsetBitsModel(word, base + 48, result[pipelineIdx].updateNum, 32);
+          \t\t}
+          \t}
+          }
+
+          static void packSummaryModel'''
+          replace_regex(
+              model,
+              r'static void packResultModel\(.*?\n\}\n\nstatic void packSummaryModel',
+              result_packer,
+              'static void packResultModel( uint8_t *resultGroup'
+          )
+          text = read(model)
+          old_model_summary = '''\tfor ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
+          \t\twriteUInt32Model(word + 24 + pipelineIdx * 8,
+          \t\t\t\t modelKernelState.pipeline[pipelineIdx].bestScore);
+          \t\tword[28 + pipelineIdx * 8] =
+          \t\t\tmodelKernelState.pipeline[pipelineIdx].terminated ? 1 : 0;
+          \t}
+          '''
+          if old_model_summary in text:
+              write(model, text.replace(old_model_summary, '', 1))
+          elif 'writeUInt32Model(word + 24 + pipelineIdx * 8' in text:
+              raise RuntimeError('Model summary cleanup failed')
+          replace_once(
+              model,
+              'if ( outputSize < ((size_t)batchSize + 1) * ACCELBEATBYTES ) {',
+              'if ( outputSize < (size_t)batchSize * ACCELRESULTBYTES + ACCELBEATBYTES ) {'
+          )
+          replace_once(
+              model,
+              'packResultModel(output.data() + (size_t)itemIdx * ACCELBEATBYTES,',
+              'packResultModel(output.data() + (size_t)itemIdx * ACCELRESULTBYTES,'
+          )
+          replace_once(
+              model,
+              'packSummaryModel(output.data() + (size_t)batchSize * ACCELBEATBYTES,',
+              'packSummaryModel(output.data() + (size_t)batchSize * ACCELRESULTBYTES,'
+          )
+
+          test_protocol = host / 'test' / 'test_protocol.cpp'
+          replace_all(
+              test_protocol,
+              'executeModelKernel(input, 2 * ACCELBEATBYTES, output, NULL)',
+              'executeModelKernel(input, ACCELRESULTBYTES + ACCELBEATBYTES, output, NULL)'
+          )
+
+          test_script = host / 'test' / 'run_accel_test.sh'
+          replace_all(test_script, '--pipelines 4', '--pipelines 16')
+
+          host_readme = host / 'README.md'
+          replace_all(host_readme, '--pipelines 4', '--pipelines 16')
+
+          # Final configuration assertions.
+          htext = read(header)
+          for required in [
+              '#define DEFAULTNUMPIPELINE 16',
+              '#define ACCELMAXPIPELINE 16',
+              '#define ACCELSEGMENTSIZE 128',
+              '#define ACCELPROTOCOLVERSION 2',
+              beat_marker,
+          ]:
+              if required not in htext:
+                  raise RuntimeError(f'Missing final host configuration: {required}')
+          ttext = read(types)
+          for required in [
+              'typedef 16 NumPipeline;',
+              'typedef 128 NumPE_Profiler;',
+              'typedef 4 NumPE_LPM;',
+          ]:
+              if required not in ttext:
+                  raise RuntimeError(f'Missing final hardware configuration: {required}')
+          PY
+
+      - name: Commit directly to main
+        run: |
+          rm .github/workflows/temporary-morbius-plus-16p.yml
+          git config user.name "OpenAI"
+          git config user.email "openai@users.noreply.github.com"
+          git add hw/kernel_morbius_plus sw/host_morbius_plus .github/workflows/temporary-morbius-plus-16p.yml
+          git commit -m "Scale Morbius+ U50 kernel to 16 pipelines"
+          git push origin HEAD:main
