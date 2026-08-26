@@ -1,0 +1,21 @@
+name: Temporary Morbius Source Export
+
+on:
+  push:
+    paths:
+      - .github/workflows/temporary-morbius-source-export.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bluevitis-morbius-source-export
+          path: hw/kernel_morbius_plus
+          if-no-files-found: error
