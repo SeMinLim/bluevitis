@@ -49,42 +49,147 @@ function Bit#(5) getMatrixAddress(Bit#(8) column);
 	return truncate(column >> 2);
 endfunction
 
-function Bit#(4) calculateValidNum(Bit#(11) candidateNum, Bit#(11) startOffset);
-	Bit#(11) remaining = candidateNum - startOffset;
-	if ( remaining >= fromInteger(valueOf(NumPE_Profiler)) ) return fromInteger(valueOf(NumPE_Profiler));
-	else return truncate(remaining);
+function Bit#(ProfilerValidWidth) calculateValidNum(Bit#(11) candidateNum,
+                                                     Bit#(11) startOffset);
+    Bit#(11) remaining = candidateNum - startOffset;
+    if ( remaining >= fromInteger(valueOf(NumPE_Profiler)) ) begin
+        return fromInteger(valueOf(NumPE_Profiler));
+    end else begin
+        return truncate(remaining);
+    end
 endfunction
 
-function Bit#(3) selectLocalCandidate(Vector#(NumPE_Profiler, PwlValue) weight,
-					      SegmentMass totalMass,
-					      Bit#(24) randomFraction,
-					      Bit#(4) validNum);
-	UInt#(46) product = zeroExtend(totalMass) * zeroExtend(unpack(randomFraction));
-	SegmentMass threshold = truncate(product >> 24);
-	UInt#(22) left4 = zeroExtend(weight[0]) + zeroExtend(weight[1]) +
-			zeroExtend(weight[2]) + zeroExtend(weight[3]);
-	Bit#(3) base4 = 0;
-	SegmentMass threshold4 = threshold;
-	if ( threshold >= left4 ) begin
-		base4 = 4;
-		threshold4 = threshold - left4;
-	end
+function LogProb maxLogProbSegment(Vector#(NumPE_Profiler, LogProb) value,
+                                   Bit#(ProfilerValidWidth) validNum);
+    Vector#(128, LogProb) masked = newVector;
+    Vector#(64, LogProb) max2 = newVector;
+    Vector#(32, LogProb) max4 = newVector;
+    Vector#(16, LogProb) max8 = newVector;
+    Vector#(8, LogProb) max16 = newVector;
+    Vector#(4, LogProb) max32 = newVector;
+    Vector#(2, LogProb) max64 = newVector;
 
-	UInt#(22) left2 = 0;
-	if ( base4 == 0 ) left2 = zeroExtend(weight[0]) + zeroExtend(weight[1]);
-	else left2 = zeroExtend(weight[4]) + zeroExtend(weight[5]);
-	Bit#(3) base2 = base4;
-	SegmentMass threshold2 = threshold4;
-	if ( threshold4 >= left2 ) begin
-		base2 = base4 + 2;
-		threshold2 = threshold4 - left2;
-	end
+    for ( Integer i = 0; i < 128; i = i + 1 ) begin
+        masked[i] = fromInteger(i) < validNum ? value[i] : 0;
+    end
+    for ( Integer i = 0; i < 64; i = i + 1 ) begin
+        max2[i] = masked[2 * i] > masked[2 * i + 1] ? masked[2 * i] : masked[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 32; i = i + 1 ) begin
+        max4[i] = max2[2 * i] > max2[2 * i + 1] ? max2[2 * i] : max2[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 16; i = i + 1 ) begin
+        max8[i] = max4[2 * i] > max4[2 * i + 1] ? max4[2 * i] : max4[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 8; i = i + 1 ) begin
+        max16[i] = max8[2 * i] > max8[2 * i + 1] ? max8[2 * i] : max8[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 4; i = i + 1 ) begin
+        max32[i] = max16[2 * i] > max16[2 * i + 1] ? max16[2 * i] : max16[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 2; i = i + 1 ) begin
+        max64[i] = max32[2 * i] > max32[2 * i + 1] ? max32[2 * i] : max32[2 * i + 1];
+    end
+    return max64[0] > max64[1] ? max64[0] : max64[1];
+endfunction
 
-	PwlValue left1 = weight[base2];
-	Bit#(3) selected = base2;
-	if ( threshold2 >= zeroExtend(left1) ) selected = base2 + 1;
-	if ( zeroExtend(selected) >= validNum ) selected = truncate(validNum - 1);
-	return selected;
+function SegmentMass sumSegmentWeight(Vector#(NumPE_Profiler, PwlValue) weight);
+    Vector#(64, SegmentMass) sum2 = newVector;
+    Vector#(32, SegmentMass) sum4 = newVector;
+    Vector#(16, SegmentMass) sum8 = newVector;
+    Vector#(8, SegmentMass) sum16 = newVector;
+    Vector#(4, SegmentMass) sum32 = newVector;
+    Vector#(2, SegmentMass) sum64 = newVector;
+
+    for ( Integer i = 0; i < 64; i = i + 1 ) begin
+        sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
+    end
+    for ( Integer i = 0; i < 32; i = i + 1 ) begin
+        sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 16; i = i + 1 ) begin
+        sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 8; i = i + 1 ) begin
+        sum16[i] = sum8[2 * i] + sum8[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 4; i = i + 1 ) begin
+        sum32[i] = sum16[2 * i] + sum16[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 2; i = i + 1 ) begin
+        sum64[i] = sum32[2 * i] + sum32[2 * i + 1];
+    end
+    return sum64[0] + sum64[1];
+endfunction
+
+function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
+                                        Vector#(NumPE_Profiler, PwlValue) weight,
+                                        SegmentMass totalMass,
+                                        Bit#(24) randomFraction,
+                                        Bit#(ProfilerValidWidth) validNum);
+    Vector#(64, SegmentMass) sum2 = newVector;
+    Vector#(32, SegmentMass) sum4 = newVector;
+    Vector#(16, SegmentMass) sum8 = newVector;
+    Vector#(8, SegmentMass) sum16 = newVector;
+    Vector#(4, SegmentMass) sum32 = newVector;
+    Vector#(2, SegmentMass) sum64 = newVector;
+
+    for ( Integer i = 0; i < 64; i = i + 1 ) begin
+        sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
+    end
+    for ( Integer i = 0; i < 32; i = i + 1 ) begin
+        sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 16; i = i + 1 ) begin
+        sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 8; i = i + 1 ) begin
+        sum16[i] = sum8[2 * i] + sum8[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 4; i = i + 1 ) begin
+        sum32[i] = sum16[2 * i] + sum16[2 * i + 1];
+    end
+    for ( Integer i = 0; i < 2; i = i + 1 ) begin
+        sum64[i] = sum32[2 * i] + sum32[2 * i + 1];
+    end
+
+    UInt#(50) product = zeroExtend(totalMass) * zeroExtend(unpack(randomFraction));
+    SegmentMass remaining = truncate(product >> 24);
+    Bit#(ProfilerValidWidth) selected = 0;
+
+    if ( remaining >= sum64[0] ) begin
+        selected = selected + 64;
+        remaining = remaining - sum64[0];
+    end
+    Bit#(2) index32 = truncate(selected >> 5);
+    if ( remaining >= sum32[index32] ) begin
+        selected = selected + 32;
+        remaining = remaining - sum32[index32];
+    end
+    Bit#(3) index16 = truncate(selected >> 4);
+    if ( remaining >= sum16[index16] ) begin
+        selected = selected + 16;
+        remaining = remaining - sum16[index16];
+    end
+    Bit#(4) index8 = truncate(selected >> 3);
+    if ( remaining >= sum8[index8] ) begin
+        selected = selected + 8;
+        remaining = remaining - sum8[index8];
+    end
+    Bit#(5) index4 = truncate(selected >> 2);
+    if ( remaining >= sum4[index4] ) begin
+        selected = selected + 4;
+        remaining = remaining - sum4[index4];
+    end
+    Bit#(6) index2 = truncate(selected >> 1);
+    if ( remaining >= sum2[index2] ) begin
+        selected = selected + 2;
+        remaining = remaining - sum2[index2];
+    end
+    Bit#(ProfilerOffsetWidth) selectedIdx = truncate(selected);
+    if ( remaining >= zeroExtend(weight[selectedIdx]) ) selected = selected + 1;
+    if ( selected >= validNum ) selected = validNum - 1;
+    return truncate(selected);
 endfunction
 
 module mkGibbsPipeline(GibbsPipelineIfc);
@@ -210,7 +315,7 @@ module mkGibbsPipeline(GibbsPipelineIfc);
 		action
 			Bit#(11) candidateNum = configR.sequenceLength - zeroExtend(configR.motifLength) + 1;
 			Bit#(12) segmentNumerator = zeroExtend(candidateNum) + fromInteger(valueOf(NumPE_Profiler) - 1);
-			Bit#(8) segmentNum = truncate(segmentNumerator >> 3);
+			Bit#(8) segmentNum = truncate(segmentNumerator >> valueOf(ProfilerOffsetWidth));
 			candidateNumR <= candidateNum;
 			expectedSegmentNumR <= segmentNum;
 			phase1SegmentStartR <= 0;
@@ -347,7 +452,8 @@ module mkGibbsPipeline(GibbsPipelineIfc);
 		Vector#(SequenceBeatNum, Bit#(512)) sequenceValue = readVReg(sequenceWords);
 		MatrixColumn lpmWord = readLpmColumn(phase1ColumnR);
 		Vector#(NumPE_Profiler, LogProb) completedLogProb = newVector;
-		Bit#(4) validNum = calculateValidNum(candidateNumR, phase1SegmentStartR);
+		Bit#(ProfilerValidWidth) validNum = calculateValidNum(candidateNumR,
+								phase1SegmentStartR);
 		Bool finalColumn = (phase1ColumnR + 1) >= configR.motifLength;
 
 		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
@@ -390,12 +496,7 @@ module mkGibbsPipeline(GibbsPipelineIfc);
 	rule profilerPhase2Issue1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && phase2StateR == PHASE2_IDLE );
 		LogProbSegment segment = logProbSegmentQ.first;
 		logProbSegmentQ.deq;
-		LogProb maximum = 0;
-		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			if ( fromInteger(i) < segment.validNum && segment.logProb[i] > maximum ) begin
-				maximum = segment.logProb[i];
-			end
-		end
+		LogProb maximum = maxLogProbSegment(segment.logProb, segment.validNum);
 		UInt#(16) exponent = truncate((maximum + 4095) >> 12);
 		UInt#(32) exponentQ12 = zeroExtend(exponent) << 12;
 		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
@@ -419,11 +520,8 @@ module mkGibbsPipeline(GibbsPipelineIfc);
 			weight[i] = response.value;
 		end
 		let randomWord <- randomGenerator.get;
-		SegmentMass segmentMass = 0;
-		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			segmentMass = segmentMass + zeroExtend(weight[i]);
-		end
-		Bit#(3) localOffset = selectLocalCandidate(weight,
+		SegmentMass segmentMass = sumSegmentWeight(weight);
+		Bit#(ProfilerOffsetWidth) localOffset = selectLocalCandidate(weight,
 							    segmentMass,
 							    randomWord[31:8],
 							    phase2SegmentR.validNum);

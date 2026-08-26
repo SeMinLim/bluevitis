@@ -3,9 +3,15 @@ package MorbiusTypes;
 import Vector::*;
 
 
-typedef 4 NumPipeline;
-typedef 8 NumPE_Profiler;
+typedef 16 NumPipeline;
+typedef 128 NumPE_Profiler;
 typedef 4 NumPE_LPM;
+typedef TLog#(NumPipeline) PipelineIndexWidth;
+typedef TLog#(NumPE_Profiler) ProfilerOffsetWidth;
+typedef TAdd#(ProfilerOffsetWidth, 1) ProfilerValidWidth;
+typedef 4 PipelinePerResultBeat;
+typedef TDiv#(NumPipeline, PipelinePerResultBeat) ResultBeatNum;
+typedef TLog#(ResultBeatNum) ResultBeatIndexWidth;
 typedef 16 SequenceBeatNum;
 typedef 128 MotifLengthMax;
 typedef 20 AlphabetMax;
@@ -16,7 +22,7 @@ typedef Bit#(360) MatrixColumn;
 typedef UInt#(18) BpmCount;
 typedef UInt#(19) PwlValue;
 typedef UInt#(32) LogProb;
-typedef UInt#(22) SegmentMass;
+typedef UInt#(TAdd#(19, ProfilerOffsetWidth)) SegmentMass;
 typedef UInt#(48) GlobalMass;
 
 typedef enum {
@@ -47,15 +53,15 @@ typedef struct {
 typedef struct {
 	Vector#(NumPE_Profiler, LogProb) logProb;
 	Bit#(11) startOffset;
-	Bit#(4) validNum;
+	Bit#(ProfilerValidWidth) validNum;
 } LogProbSegment deriving (Bits, Eq, FShow);
 
 typedef struct {
 	Bit#(11) startOffset;
 	UInt#(16) exponent;
 	SegmentMass mass;
-	Bit#(3) localOffset;
-	Bit#(4) validNum;
+	Bit#(ProfilerOffsetWidth) localOffset;
+	Bit#(ProfilerValidWidth) validNum;
 } SegmentSummary deriving (Bits, Eq, FShow);
 
 typedef struct {

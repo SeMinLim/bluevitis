@@ -51,9 +51,9 @@ interface KernelMainIfc;
 endinterface
 
 function Bit#(512) packPipelineResult(Bit#(512) word,
-					      Integer pipelineIdx,
+					      Integer resultSlot,
 					      PipelineResult result);
-	Integer base = 64 + pipelineIdx * 96;
+	Integer base = 64 + resultSlot * 96;
 	Bit#(96) packedValue = 0;
 	packedValue[10:0] = result.newOffset;
 	packedValue[11] = pack(result.bestUpdate);
@@ -69,7 +69,7 @@ endfunction
 module mkKernelMain(KernelMainIfc);
 	Bit#(32) commandMagic = 32'h4d504c53;
 	Bit#(32) resultMagic = 32'h4d50524c;
-	Bit#(16) protocolVersion = 1;
+	Bit#(16) protocolVersion = 2;
 
 	Vector#(NumPipeline, GibbsPipelineIfc) pipelines <- replicateM(mkGibbsPipeline);
 
@@ -98,16 +98,17 @@ module mkKernelMain(KernelMainIfc);
 	Reg#(Bit#(64)) readCursorR <- mkReg(0);
 	Reg#(Bit#(5)) sequenceBeatIdxR <- mkReg(0);
 	Reg#(UInt#(32)) itemIdxR <- mkReg(0);
-	Reg#(Bit#(3)) bootstrapPipelineR <- mkReg(0);
+	Reg#(Bit#(PipelineIndexWidth)) bootstrapPipelineR <- mkReg(0);
 	Reg#(Bit#(8)) bootstrapColumnR <- mkReg(0);
 	Vector#(NumPipeline, Reg#(Bit#(11))) tentativeOffsetsR <- replicateM(mkReg(0));
 
-	Reg#(Bit#(512)) resultWordR <- mkReg(0);
+	Vector#(ResultBeatNum, Reg#(Bit#(512))) resultWordsR <- replicateM(mkReg(0));
+	Reg#(Bit#(ResultBeatIndexWidth)) resultBeatIdxR <- mkReg(0);
 	Reg#(Bit#(512)) summaryWordR <- mkReg(0);
 	Reg#(Bit#(64)) resultWriteAddrR <- mkReg(0);
 	Reg#(UInt#(32)) processedNumR <- mkReg(0);
 	Reg#(Bool) allDoneR <- mkReg(False);
-	Reg#(Bit#(2)) bestPipelineR <- mkReg(0);
+	Reg#(Bit#(PipelineIndexWidth)) bestPipelineR <- mkReg(0);
 
 	rule incrementCycle;
 		cycleCounterR <= cycleCounterR + 1;
@@ -208,6 +209,7 @@ module mkKernelMain(KernelMainIfc);
 		bootstrapColumnR <= 0;
 		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
 	endrule
+
 	rule receiveBootstrapState1 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 1 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
@@ -221,6 +223,7 @@ module mkKernelMain(KernelMainIfc);
 		bootstrapColumnR <= 0;
 		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
 	endrule
+
 	rule receiveBootstrapState2 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 2 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
@@ -234,12 +237,181 @@ module mkKernelMain(KernelMainIfc);
 		bootstrapColumnR <= 0;
 		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
 	endrule
+
 	rule receiveBootstrapState3 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 3 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
 		Bool active = unpack(word[160]);
 		if ( fromInteger(3) >= pipelineNumR ) active = False;
 		pipelines[3].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState4 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 4 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(4) >= pipelineNumR ) active = False;
+		pipelines[4].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState5 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 5 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(5) >= pipelineNumR ) active = False;
+		pipelines[5].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState6 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 6 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(6) >= pipelineNumR ) active = False;
+		pipelines[6].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState7 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 7 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(7) >= pipelineNumR ) active = False;
+		pipelines[7].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState8 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 8 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(8) >= pipelineNumR ) active = False;
+		pipelines[8].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState9 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 9 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(9) >= pipelineNumR ) active = False;
+		pipelines[9].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState10 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 10 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(10) >= pipelineNumR ) active = False;
+		pipelines[10].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState11 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 11 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(11) >= pipelineNumR ) active = False;
+		pipelines[11].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState12 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 12 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(12) >= pipelineNumR ) active = False;
+		pipelines[12].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState13 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 13 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(13) >= pipelineNumR ) active = False;
+		pipelines[13].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState14 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 14 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(14) >= pipelineNumR ) active = False;
+		pipelines[14].configure(getPipelineConfig,
+				       word[127:0],
+				       unpack(word[159:128]),
+				       active);
+		readCursorR <= readCursorR + 64;
+		bootstrapColumnR <= 0;
+		stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+	endrule
+
+	rule receiveBootstrapState15 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE && bootstrapPipelineR == 15 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		Bool active = unpack(word[160]);
+		if ( fromInteger(15) >= pipelineNumR ) active = False;
+		pipelines[15].configure(getPipelineConfig,
 				       word[127:0],
 				       unpack(word[159:128]),
 				       active);
@@ -266,6 +438,7 @@ module mkKernelMain(KernelMainIfc);
 			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
 		end
 	endrule
+
 	rule receiveBootstrapBpm1 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 1 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
@@ -279,6 +452,7 @@ module mkKernelMain(KernelMainIfc);
 			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
 		end
 	endrule
+
 	rule receiveBootstrapBpm2 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 2 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
@@ -292,10 +466,179 @@ module mkKernelMain(KernelMainIfc);
 			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
 		end
 	endrule
+
 	rule receiveBootstrapBpm3 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 3 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
 		pipelines[3].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm4 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 4 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[4].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm5 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 5 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[5].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm6 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 6 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[6].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm7 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 7 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[7].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm8 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 8 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[8].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm9 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 9 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[9].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm10 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 10 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[10].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm11 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 11 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[11].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm12 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 12 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[12].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm13 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 13 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[13].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm14 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 14 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[14].loadBpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapColumnR <= 0;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_BPM;
+		end
+	endrule
+
+	rule receiveBootstrapBpm15 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && bootstrapPipelineR == 15 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[15].loadBpmColumn(bootstrapColumnR, truncate(word));
 		readCursorR <= readCursorR + 64;
 		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
 			bootstrapColumnR <= 0;
@@ -324,6 +667,7 @@ module mkKernelMain(KernelMainIfc);
 			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
 		end
 	endrule
+
 	rule receiveBootstrapLpm1 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 1 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
@@ -337,6 +681,7 @@ module mkKernelMain(KernelMainIfc);
 			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
 		end
 	endrule
+
 	rule receiveBootstrapLpm2 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 2 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
@@ -350,10 +695,179 @@ module mkKernelMain(KernelMainIfc);
 			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
 		end
 	endrule
+
 	rule receiveBootstrapLpm3 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 3 );
 		Bit#(512) word = readWordQs[0].first;
 		readWordQs[0].deq;
 		pipelines[3].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 4;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm4 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 4 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[4].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 5;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm5 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 5 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[5].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 6;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm6 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 6 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[6].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 7;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm7 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 7 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[7].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 8;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm8 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 8 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[8].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 9;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm9 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 9 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[9].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 10;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm10 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 10 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[10].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 11;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm11 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 11 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[11].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 12;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm12 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 12 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[12].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 13;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm13 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 13 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[13].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 14;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm14 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 14 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[14].loadLpmColumn(bootstrapColumnR, truncate(word));
+		readCursorR <= readCursorR + 64;
+		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
+			bootstrapPipelineR <= 15;
+			stateR <= KERNEL_REQ_BOOTSTRAP_STATE;
+		end else begin
+			bootstrapColumnR <= bootstrapColumnR + 1;
+			stateR <= KERNEL_REQ_BOOTSTRAP_LPM;
+		end
+	endrule
+
+	rule receiveBootstrapLpm15 ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && bootstrapPipelineR == 15 );
+		Bit#(512) word = readWordQs[0].first;
+		readWordQs[0].deq;
+		pipelines[15].loadLpmColumn(bootstrapColumnR, truncate(word));
 		readCursorR <= readCursorR + 64;
 		if ( (bootstrapColumnR + 1) >= motifLengthR ) begin
 			stateR <= KERNEL_START_PIPELINES;
@@ -397,41 +911,71 @@ module mkKernelMain(KernelMainIfc);
 		let result1 <- pipelines[1].result;
 		let result2 <- pipelines[2].result;
 		let result3 <- pipelines[3].result;
+		let result4 <- pipelines[4].result;
+		let result5 <- pipelines[5].result;
+		let result6 <- pipelines[6].result;
+		let result7 <- pipelines[7].result;
+		let result8 <- pipelines[8].result;
+		let result9 <- pipelines[9].result;
+		let result10 <- pipelines[10].result;
+		let result11 <- pipelines[11].result;
+		let result12 <- pipelines[12].result;
+		let result13 <- pipelines[13].result;
+		let result14 <- pipelines[14].result;
+		let result15 <- pipelines[15].result;
 
-		Bit#(512) word = 0;
-		word[31:0] = resultMagic;
-		word[47:32] = protocolVersion;
-		word[63:48] = truncate(pack(itemIdxR));
-		word = packPipelineResult(word, 0, result0);
-		word = packPipelineResult(word, 1, result1);
-		word = packPipelineResult(word, 2, result2);
-		word = packPipelineResult(word, 3, result3);
+		Vector#(NumPipeline, PipelineResult) result = newVector;
+		result[0] = result0;
+		result[1] = result1;
+		result[2] = result2;
+		result[3] = result3;
+		result[4] = result4;
+		result[5] = result5;
+		result[6] = result6;
+		result[7] = result7;
+		result[8] = result8;
+		result[9] = result9;
+		result[10] = result10;
+		result[11] = result11;
+		result[12] = result12;
+		result[13] = result13;
+		result[14] = result14;
+		result[15] = result15;
 
-		Bool allDone = result0.terminated && result1.terminated &&
-				   result2.terminated && result3.terminated;
-		Bit#(2) bestIdx = 0;
-		UInt#(32) bestScore = result0.bestScore;
-		if ( result1.active && result1.bestScore > bestScore ) begin
-			bestIdx = 1;
-			bestScore = result1.bestScore;
+		Bool allDone = True;
+		Bit#(PipelineIndexWidth) bestIdx = 0;
+		UInt#(32) bestScore = 0;
+		for ( Integer i = 0; i < valueOf(NumPipeline); i = i + 1 ) begin
+			allDone = allDone && result[i].terminated;
+			if ( result[i].active && result[i].bestScore > bestScore ) begin
+				bestIdx = fromInteger(i);
+				bestScore = result[i].bestScore;
+			end
 		end
-		if ( result2.active && result2.bestScore > bestScore ) begin
-			bestIdx = 2;
-			bestScore = result2.bestScore;
-		end
-		if ( result3.active && result3.bestScore > bestScore ) begin
-			bestIdx = 3;
-			bestScore = result3.bestScore;
-		end
-		word[448] = pack(allDone);
-		word[463:456] = zeroExtend(bestIdx);
-		word[495:464] = pack(bestScore);
 
-		resultWordR <= word;
+		Vector#(ResultBeatNum, Bit#(512)) resultWords = replicate(0);
+		for ( Integer beatIdx = 0; beatIdx < valueOf(ResultBeatNum); beatIdx = beatIdx + 1 ) begin
+			Bit#(512) word = 0;
+			word[31:0] = resultMagic;
+			word[47:32] = protocolVersion;
+			word[55:48] = fromInteger(beatIdx);
+			for ( Integer slotIdx = 0;
+			      slotIdx < valueOf(PipelinePerResultBeat);
+			      slotIdx = slotIdx + 1 ) begin
+				Integer pipelineIdx = beatIdx * valueOf(PipelinePerResultBeat) + slotIdx;
+				word = packPipelineResult(word, slotIdx, result[pipelineIdx]);
+			end
+			resultWords[beatIdx] = word;
+		end
+		for ( Integer i = 0; i < valueOf(ResultBeatNum); i = i + 1 ) begin
+			resultWordsR[i] <= resultWords[i];
+		end
+
 		allDoneR <= allDone;
 		bestPipelineR <= bestIdx;
 		processedNumR <= processedNumR + 1;
-		resultWriteAddrR <= zeroExtend(pack(itemIdxR)) << 6;
+		resultBeatIdxR <= 0;
+		resultWriteAddrR <= zeroExtend(pack(itemIdxR)) << 8;
 		stateR <= KERNEL_REQ_RESULT_WRITE;
 	endrule
 
@@ -440,31 +984,34 @@ module mkKernelMain(KernelMainIfc);
 		stateR <= KERNEL_WRITE_RESULT;
 	endrule
 
-	rule writeResult ( startedR && stateR == KERNEL_WRITE_RESULT );
-		writeWordQs[1].enq(resultWordR);
-		Bool finalItem = commandR == 0 || allDoneR || (itemIdxR + 1) >= batchSizeR;
-		if ( finalItem ) begin
-			Bit#(512) summary = 0;
-			summary[31:0] = resultMagic;
-			summary[47:32] = protocolVersion;
-			summary[95:64] = pack(processedNumR);
-			summary[96] = pack(allDoneR);
-			summary[111:104] = zeroExtend(bestPipelineR);
-			summary[159:128] = pack(cycleCounterR - cycleStartR);
-			for ( Integer i = 0; i < valueOf(NumPipeline); i = i + 1 ) begin
-				Integer base = 192 + i * 64;
-				summary[base + 31:base] = pack(pipelines[i].bestScore);
-				summary[base + 32] = pack(pipelines[i].terminated);
-			end
-			summaryWordR <= summary;
-			resultWriteAddrR <= zeroExtend(pack(batchSizeR)) << 6;
-			stateR <= KERNEL_REQ_SUMMARY_WRITE;
-		end else begin
-			itemIdxR <= itemIdxR + 1;
-			sequenceBeatIdxR <= 0;
-			stateR <= KERNEL_REQ_SEQUENCE;
-		end
-	endrule
+\trule writeResult ( startedR && stateR == KERNEL_WRITE_RESULT );
+\t\tVector#(ResultBeatNum, Bit#(512)) resultWords = readVReg(resultWordsR);
+\t\twriteWordQs[1].enq(resultWords[resultBeatIdxR]);
+\t\tif ( resultBeatIdxR != fromInteger(valueOf(ResultBeatNum) - 1) ) begin
+\t\t\tresultBeatIdxR <= resultBeatIdxR + 1;
+\t\t\tresultWriteAddrR <= resultWriteAddrR + 64;
+\t\t\tstateR <= KERNEL_REQ_RESULT_WRITE;
+\t\tend else begin
+\t\t\tBool finalItem = commandR == 0 || allDoneR || (itemIdxR + 1) >= batchSizeR;
+\t\t\tif ( finalItem ) begin
+\t\t\t\tBit#(512) summary = 0;
+\t\t\t\tsummary[31:0] = resultMagic;
+\t\t\t\tsummary[47:32] = protocolVersion;
+\t\t\t\tsummary[55:48] = 8'hff;
+\t\t\t\tsummary[95:64] = pack(processedNumR);
+\t\t\t\tsummary[96] = pack(allDoneR);
+\t\t\t\tsummary[111:104] = zeroExtend(bestPipelineR);
+\t\t\t\tsummary[159:128] = pack(cycleCounterR - cycleStartR);
+\t\t\t\tsummaryWordR <= summary;
+\t\t\t\tresultWriteAddrR <= zeroExtend(pack(batchSizeR)) << 8;
+\t\t\t\tstateR <= KERNEL_REQ_SUMMARY_WRITE;
+\t\t\tend else begin
+\t\t\t\titemIdxR <= itemIdxR + 1;
+\t\t\t\tsequenceBeatIdxR <= 0;
+\t\t\t\tstateR <= KERNEL_REQ_SEQUENCE;
+\t\t\tend
+\t\tend
+\tendrule
 
 	rule requestSummaryWrite ( startedR && stateR == KERNEL_REQ_SUMMARY_WRITE );
 		writeReqQs[1].enq(MemPortReq{addr: resultWriteAddrR, bytes: 64});
