@@ -154,23 +154,28 @@ void buildBatchCommand( const Config *config,
 	}
 }
 
-// Parse one per-sequence result beat
-void parseResultBeat( const uint8_t *beat,
+// Parse one per-sequence result group
+void parseResultBeat( const uint8_t *resultGroup,
 		      vector<AccelWireResult> &results ) {
-	if ( readUInt32(beat + 0) != ACCELRESULTMAGIC ||
-	     readUInt16(beat + 4) != ACCELPROTOCOLVERSION ) {
-		printf( "Invalid Morbius+ accelerator result header.\n" );
-		exit(1);
-	}
 	results.resize(ACCELMAXPIPELINE);
-	for ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
-		size_t base = 64 + (size_t)pipelineIdx * 96;
-		results[(size_t)pipelineIdx].newOffset = getBits(beat, base + 0, 11);
-		results[(size_t)pipelineIdx].bestUpdate = getBits(beat, base + 11, 1) != 0;
-		results[(size_t)pipelineIdx].terminated = getBits(beat, base + 12, 1) != 0;
-		results[(size_t)pipelineIdx].active = getBits(beat, base + 13, 1) != 0;
-		results[(size_t)pipelineIdx].bestScore = getBits(beat, base + 16, 32);
-		results[(size_t)pipelineIdx].updateNum = getBits(beat, base + 48, 32);
+	for ( int beatIdx = 0; beatIdx < ACCELRESULTBEATNUM; beatIdx ++ ) {
+		const uint8_t *beat = resultGroup + (size_t)beatIdx * ACCELBEATBYTES;
+		if ( readUInt32(beat + 0) != ACCELRESULTMAGIC ||
+		     readUInt16(beat + 4) != ACCELPROTOCOLVERSION ||
+		     beat[6] != (uint8_t)beatIdx ) {
+			printf( "Invalid Morbius+ accelerator result beat: %d.\n", beatIdx );
+			exit(1);
+		}
+		for ( int slotIdx = 0; slotIdx < ACCELPIPELINEPERRESULTBEAT; slotIdx ++ ) {
+			int pipelineIdx = beatIdx * ACCELPIPELINEPERRESULTBEAT + slotIdx;
+			size_t base = 64 + (size_t)slotIdx * 96;
+			results[(size_t)pipelineIdx].newOffset = getBits(beat, base + 0, 11);
+			results[(size_t)pipelineIdx].bestUpdate = getBits(beat, base + 11, 1) != 0;
+			results[(size_t)pipelineIdx].terminated = getBits(beat, base + 12, 1) != 0;
+			results[(size_t)pipelineIdx].active = getBits(beat, base + 13, 1) != 0;
+			results[(size_t)pipelineIdx].bestScore = getBits(beat, base + 16, 32);
+			results[(size_t)pipelineIdx].updateNum = getBits(beat, base + 48, 32);
+		}
 	}
 }
 
@@ -186,7 +191,7 @@ void parseSummaryBeat( const uint8_t *beat, AccelSummary *summary ) {
 	summary->bestPipelineIdx = beat[13];
 	summary->cycleNum = readUInt32(beat + 16);
 	for ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
-		summary->bestScore[pipelineIdx] = readUInt32(beat + 24 + pipelineIdx * 8);
-		summary->terminated[pipelineIdx] = (beat[28 + pipelineIdx * 8] & 0x1U) != 0;
+		summary->bestScore[pipelineIdx] = 0;
+		summary->terminated[pipelineIdx] = false;
 	}
 }

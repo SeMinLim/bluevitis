@@ -80,7 +80,7 @@ void runAccelerator( const Config *config,
 	vector<uint8_t> input;
 	vector<uint8_t> output;
 	buildBootstrapCommand(config, dataset, pipelineStates, input);
-	if ( executor(input, 2 * ACCELBEATBYTES, output, executorContext) != 0 ) {
+	if ( executor(input, ACCELRESULTBYTES + ACCELBEATBYTES, output, executorContext) != 0 ) {
 		printf( "Morbius+ bootstrap execution failed.\n" );
 		exit(1);
 	}
@@ -88,7 +88,7 @@ void runAccelerator( const Config *config,
 	parseResultBeat(output.data(), wireResults);
 	bool allDone = applyResults(config, dataset, 0, wireResults, pipelineStates);
 	AccelSummary summary;
-	parseSummaryBeat(output.data() + ACCELBEATBYTES, &summary);
+	parseSummaryBeat(output.data() + ACCELRESULTBYTES, &summary);
 	if ( summary.processedNum != 1 ) {
 		printf( "Morbius+ bootstrap returned an invalid processed count: %u\n", summary.processedNum );
 		exit(1);
@@ -108,14 +108,14 @@ void runAccelerator( const Config *config,
 				 sequenceStart,
 				 batchNum,
 				 input);
-		size_t outputSize = (batchNum + 1) * ACCELBEATBYTES;
+		size_t outputSize = batchNum * ACCELRESULTBYTES + ACCELBEATBYTES;
 		if ( executor(input, outputSize, output, executorContext) != 0 ) {
 			printf( "Morbius+ batch execution failed at sequence index %lu.\n",
 				(unsigned long)sequenceStart
 			);
 			exit(1);
 		}
-		parseSummaryBeat(output.data() + batchNum * ACCELBEATBYTES, &summary);
+		parseSummaryBeat(output.data() + batchNum * ACCELRESULTBYTES, &summary);
 		if ( summary.processedNum == 0 || summary.processedNum > batchNum ) {
 			printf( "Morbius+ accelerator returned an invalid processed count: %u\n",
 				summary.processedNum
@@ -125,7 +125,7 @@ void runAccelerator( const Config *config,
 
 		for ( uint32_t itemIdx = 0; itemIdx < summary.processedNum; itemIdx ++ ) {
 			size_t sequenceIdx = (sequenceStart + itemIdx) % dataset->sequences.size();
-			parseResultBeat(output.data() + (size_t)itemIdx * ACCELBEATBYTES, wireResults);
+			parseResultBeat(output.data() + (size_t)itemIdx * ACCELRESULTBYTES, wireResults);
 			allDone = applyResults(config,
 					       dataset,
 					       sequenceIdx,

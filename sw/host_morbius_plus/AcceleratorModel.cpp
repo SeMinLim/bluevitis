@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <algorithm>
+#include <array>
 #include <vector>
 using namespace std;
 
@@ -111,34 +112,19 @@ static uint32_t calculateModelScore( const ModelPipelineState *state ) {
 	return score;
 }
 
-static uint32_t selectLocalCandidateModel( const uint32_t weight[ACCELSEGMENTSIZE],
+static uint32_t selectLocalCandidateModel( const uint32_t *weight,
 					   uint32_t totalMass,
 					   uint32_t randomFraction,
 					   uint32_t validNum ) {
 	uint64_t product = (uint64_t)totalMass * (uint64_t)randomFraction;
 	uint32_t threshold = (uint32_t)(product >> 24);
-	uint32_t left4 = weight[0] + weight[1] + weight[2] + weight[3];
-	uint32_t base4 = 0;
-	uint32_t threshold4 = threshold;
-	if ( threshold >= left4 ) {
-		base4 = 4;
-		threshold4 = threshold - left4;
+	uint32_t cumulative = 0;
+	for ( uint32_t localIdx = 0; localIdx < validNum; localIdx ++ ) {
+		uint32_t nextCumulative = cumulative + weight[localIdx];
+		if ( nextCumulative > threshold || localIdx + 1 == validNum ) return localIdx;
+		cumulative = nextCumulative;
 	}
-
-	uint32_t left2 = 0;
-	if ( base4 == 0 ) left2 = weight[0] + weight[1];
-	else left2 = weight[4] + weight[5];
-	uint32_t base2 = base4;
-	uint32_t threshold2 = threshold4;
-	if ( threshold4 >= left2 ) {
-		base2 = base4 + 2;
-		threshold2 = threshold4 - left2;
-	}
-
-	uint32_t selected = base2;
-	if ( threshold2 >= weight[base2] ) selected = base2 + 1;
-	if ( selected >= validNum ) selected = validNum - 1;
-	return selected;
+	return 0;
 }
 
 static uint32_t sampleCandidateModel( ModelPipelineState *state ) {
@@ -153,8 +139,8 @@ static uint32_t sampleCandidateModel( ModelPipelineState *state ) {
 	      segmentStart < candidateNum;
 	      segmentStart += ACCELSEGMENTSIZE ) {
 		uint32_t validNum = min((uint32_t)ACCELSEGMENTSIZE, candidateNum - segmentStart);
-		uint32_t logProb[ACCELSEGMENTSIZE] = {0, 0, 0, 0, 0, 0, 0, 0};
-		uint32_t weight[ACCELSEGMENTSIZE] = {0, 0, 0, 0, 0, 0, 0, 0};
+		array<uint32_t, ACCELSEGMENTSIZE> logProb = {};
+		array<uint32_t, ACCELSEGMENTSIZE> weight = {};
 		uint32_t maximum = 0;
 
 		for ( uint32_t localIdx = 0; localIdx < validNum; localIdx ++ ) {
@@ -178,7 +164,7 @@ static uint32_t sampleCandidateModel( ModelPipelineState *state ) {
 		}
 
 		uint32_t localRandom = randomWord(&state->randomGenerator) >> 8;
-		uint32_t localOffset = selectLocalCandidateModel(weight,
+		uint32_t localOffset = selectLocalCandidateModel(weight.data(),
 							    segmentMass,
 							    localRandom,
 							    validNum);
@@ -294,26 +280,30 @@ static void unpackMatrixModel( ModelPipelineState *state,
 	}
 }
 
-static void packResultModel( uint8_t *word,
+static void packResultModel( uint8_t *resultGroup,
 			     uint16_t itemIdx,
 			     const AccelWireResult result[ACCELMAXPIPELINE],
 			     bool allDone,
 			     int bestPipelineIdx ) {
-	writeUInt32Model(word + 0, ACCELRESULTMAGIC);
-	writeUInt16Model(word + 4, ACCELPROTOCOLVERSION);
-	writeUInt16Model(word + 6, itemIdx);
-	for ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
-		size_t base = 64 + (size_t)pipelineIdx * 96;
-		setBitsModel(word, base + 0, result[pipelineIdx].newOffset, 11);
-		setBitsModel(word, base + 11, result[pipelineIdx].bestUpdate ? 1 : 0, 1);
-		setBitsModel(word, base + 12, result[pipelineIdx].terminated ? 1 : 0, 1);
-		setBitsModel(word, base + 13, result[pipelineIdx].active ? 1 : 0, 1);
-		setBitsModel(word, base + 16, result[pipelineIdx].bestScore, 32);
-		setBitsModel(word, base + 48, result[pipelineIdx].updateNum, 32);
+	(void)itemIdx;
+	(void)allDone;
+	(void)bestPipelineIdx;
+	for ( int beatIdx = 0; beatIdx < ACCELRESULTBEATNUM; beatIdx ++ ) {
+		uint8_t *word = resultGroup + (size_t)beatIdx * ACCELBEATBYTES;
+		writeUInt32Model(word + 0, ACCELRESULTMAGIC);
+		writeUInt16Model(word + 4, ACCELPROTOCOLVERSION);
+		word[6] = (uint8_t)beatIdx;
+		for ( int slotIdx = 0; slotIdx < ACCELPIPELINEPERRESULTBEAT; slotIdx ++ ) {
+			int pipelineIdx = beatIdx * ACCELPIPELINEPERRESULTBEAT + slotIdx;
+			size_t base = 64 + (size_t)slotIdx * 96;
+			setBitsModel(word, base + 0, result[pipelineIdx].newOffset, 11);
+			setBitsModel(word, base + 11, result[pipelineIdx].bestUpdate ? 1 : 0, 1);
+			setBitsModel(word, base + 12, result[pipelineIdx].terminated ? 1 : 0, 1);
+			setBitsModel(word, base + 13, result[pipelineIdx].active ? 1 : 0, 1);
+			setBitsModel(word, base + 16, result[pipelineIdx].bestScore, 32);
+			setBitsModel(word, base + 48, result[pipelineIdx].updateNum, 32);
+		}
 	}
-	word[56] = allDone ? 1 : 0;
-	word[57] = (uint8_t)bestPipelineIdx;
-	writeUInt32Model(word + 58, result[bestPipelineIdx].bestScore);
 }
 
 static void packSummaryModel( uint8_t *word,
@@ -326,12 +316,6 @@ static void packSummaryModel( uint8_t *word,
 	word[12] = allDone ? 1 : 0;
 	word[13] = (uint8_t)bestPipelineIdx;
 	writeUInt32Model(word + 16, 0);
-	for ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
-		writeUInt32Model(word + 24 + pipelineIdx * 8,
-				 modelKernelState.pipeline[pipelineIdx].bestScore);
-		word[28 + pipelineIdx * 8] =
-			modelKernelState.pipeline[pipelineIdx].terminated ? 1 : 0;
-	}
 }
 
 void resetModelKernel( void ) {
@@ -374,7 +358,7 @@ int executeModelKernel( const vector<uint8_t> &input,
 	}
 
 	output.assign(outputSize, 0);
-	if ( outputSize < ((size_t)batchSize + 1) * ACCELBEATBYTES ) {
+	if ( outputSize < (size_t)batchSize * ACCELRESULTBYTES + ACCELBEATBYTES ) {
 		printf( "Accelerator model output buffer is too small.\n" );
 		return 1;
 	}
@@ -449,7 +433,7 @@ int executeModelKernel( const vector<uint8_t> &input,
 					bestPipelineIdx = pipelineIdx;
 				}
 			}
-			packResultModel(output.data() + (size_t)itemIdx * ACCELBEATBYTES,
+			packResultModel(output.data() + (size_t)itemIdx * ACCELRESULTBYTES,
 					(uint16_t)itemIdx,
 					result,
 					allDone,
@@ -475,7 +459,7 @@ int executeModelKernel( const vector<uint8_t> &input,
 	if ( command == ACCELCOMMAND_BOOTSTRAP ) {
 		packResultModel(output.data(), 0, result, allDone, bestPipelineIdx);
 	}
-	packSummaryModel(output.data() + (size_t)batchSize * ACCELBEATBYTES,
+	packSummaryModel(output.data() + (size_t)batchSize * ACCELRESULTBYTES,
 			 processedNum,
 			 allDone,
 			 bestPipelineIdx);

@@ -90,7 +90,7 @@ int main( void ) {
 
 	resetModelKernel();
 	buildBootstrapCommand(&config, &dataset, states, input);
-	if ( executeModelKernel(input, 2 * ACCELBEATBYTES, output, NULL) != 0 ) {
+	if ( executeModelKernel(input, ACCELRESULTBYTES + ACCELBEATBYTES, output, NULL) != 0 ) {
 		printf( "Bootstrap protocol test failed to execute.\n" );
 		return 1;
 	}
@@ -109,7 +109,7 @@ int main( void ) {
 	}
 
 	buildBatchCommand(&config, &dataset, states, 0, 1, input);
-	if ( executeModelKernel(input, 2 * ACCELBEATBYTES, output, NULL) != 0 ) {
+	if ( executeModelKernel(input, ACCELRESULTBYTES + ACCELBEATBYTES, output, NULL) != 0 ) {
 		printf( "Update protocol test failed to execute.\n" );
 		return 1;
 	}

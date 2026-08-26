@@ -984,34 +984,34 @@ module mkKernelMain(KernelMainIfc);
 		stateR <= KERNEL_WRITE_RESULT;
 	endrule
 
-\trule writeResult ( startedR && stateR == KERNEL_WRITE_RESULT );
-\t\tVector#(ResultBeatNum, Bit#(512)) resultWords = readVReg(resultWordsR);
-\t\twriteWordQs[1].enq(resultWords[resultBeatIdxR]);
-\t\tif ( resultBeatIdxR != fromInteger(valueOf(ResultBeatNum) - 1) ) begin
-\t\t\tresultBeatIdxR <= resultBeatIdxR + 1;
-\t\t\tresultWriteAddrR <= resultWriteAddrR + 64;
-\t\t\tstateR <= KERNEL_REQ_RESULT_WRITE;
-\t\tend else begin
-\t\t\tBool finalItem = commandR == 0 || allDoneR || (itemIdxR + 1) >= batchSizeR;
-\t\t\tif ( finalItem ) begin
-\t\t\t\tBit#(512) summary = 0;
-\t\t\t\tsummary[31:0] = resultMagic;
-\t\t\t\tsummary[47:32] = protocolVersion;
-\t\t\t\tsummary[55:48] = 8'hff;
-\t\t\t\tsummary[95:64] = pack(processedNumR);
-\t\t\t\tsummary[96] = pack(allDoneR);
-\t\t\t\tsummary[111:104] = zeroExtend(bestPipelineR);
-\t\t\t\tsummary[159:128] = pack(cycleCounterR - cycleStartR);
-\t\t\t\tsummaryWordR <= summary;
-\t\t\t\tresultWriteAddrR <= zeroExtend(pack(batchSizeR)) << 8;
-\t\t\t\tstateR <= KERNEL_REQ_SUMMARY_WRITE;
-\t\t\tend else begin
-\t\t\t\titemIdxR <= itemIdxR + 1;
-\t\t\t\tsequenceBeatIdxR <= 0;
-\t\t\t\tstateR <= KERNEL_REQ_SEQUENCE;
-\t\t\tend
-\t\tend
-\tendrule
+	rule writeResult ( startedR && stateR == KERNEL_WRITE_RESULT );
+		Vector#(ResultBeatNum, Bit#(512)) resultWords = readVReg(resultWordsR);
+		writeWordQs[1].enq(resultWords[resultBeatIdxR]);
+		if ( resultBeatIdxR != fromInteger(valueOf(ResultBeatNum) - 1) ) begin
+			resultBeatIdxR <= resultBeatIdxR + 1;
+			resultWriteAddrR <= resultWriteAddrR + 64;
+			stateR <= KERNEL_REQ_RESULT_WRITE;
+		end else begin
+			Bool finalItem = commandR == 0 || allDoneR || (itemIdxR + 1) >= batchSizeR;
+			if ( finalItem ) begin
+				Bit#(512) summary = 0;
+				summary[31:0] = resultMagic;
+				summary[47:32] = protocolVersion;
+				summary[55:48] = 8'hff;
+				summary[95:64] = pack(processedNumR);
+				summary[96] = pack(allDoneR);
+				summary[111:104] = zeroExtend(bestPipelineR);
+				summary[159:128] = pack(cycleCounterR - cycleStartR);
+				summaryWordR <= summary;
+				resultWriteAddrR <= zeroExtend(pack(batchSizeR)) << 8;
+				stateR <= KERNEL_REQ_SUMMARY_WRITE;
+			end else begin
+				itemIdxR <= itemIdxR + 1;
+				sequenceBeatIdxR <= 0;
+				stateR <= KERNEL_REQ_SEQUENCE;
+			end
+		end
+	endrule
 
 	rule requestSummaryWrite ( startedR && stateR == KERNEL_REQ_SUMMARY_WRITE );
 		writeReqQs[1].enq(MemPortReq{addr: resultWriteAddrR, bytes: 64});
