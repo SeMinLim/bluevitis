@@ -13,6 +13,7 @@ VFILES="
 	FIFOL2.v
 	FIFO1.v
 	FIFO2.v
+	RegFile.v
 	ResetInverter.v
 	SyncFIFO.v
 	ClockDiv.v
