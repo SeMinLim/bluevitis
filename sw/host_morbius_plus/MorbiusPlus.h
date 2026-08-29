@@ -17,7 +17,6 @@
 #define PROTEINSEEDMAX 3
 #define PSEUDOCOUNT 1
 #define RANDOMFRACTIONBITS 24
-#define DEFAULTNUMPIPELINE 16
 #define DEFAULTMAXSWEEPNUM 20
 #define DEFAULTSCORETHRESHOLD 0.90
 #define DEFAULTSEED 1
@@ -46,7 +45,6 @@ typedef struct Config {
 	std::string xclbinFilename;
 	int alphabetMode;
 	size_t motifLength;
-	int numPipeline;
 	uint64_t maxUpdateNum;
 	double scoreThreshold;
 	uint64_t randomSeed;

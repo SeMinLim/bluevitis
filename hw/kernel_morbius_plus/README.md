@@ -24,7 +24,7 @@ make sim
 
 ```bash
 make all TARGET=hw_emu
-make run TARGET=hw_emu MORBIUS_ARGS="--input /path/to/input.fa --output output/result --alphabet dna --motif-length 16 --pipelines 16 --max-updates 32768 --score-threshold 1.0 --seed 1"
+make run TARGET=hw_emu MORBIUS_ARGS="--input /path/to/input.fa --output output/result --alphabet dna --motif-length 16 --max-updates 32768 --score-threshold 1.0 --seed 1"
 ```
 
 For the physical U50:
@@ -32,5 +32,5 @@ For the physical U50:
 ```bash
 xbutil configure --device <BDF> --host-mem --size 1G enable
 make all TARGET=hw
-make run TARGET=hw MORBIUS_ARGS="--input /path/to/input.fa --output output/result --alphabet dna --motif-length 16 --pipelines 16 --max-updates 32768 --score-threshold 1.0 --seed 1"
+make run TARGET=hw MORBIUS_ARGS="--input /path/to/input.fa --output output/result --alphabet dna --motif-length 16 --max-updates 32768 --score-threshold 1.0 --seed 1"
 ```

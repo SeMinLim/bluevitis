@@ -13,7 +13,8 @@ CXXFLAGS := -g -std=c++17 -Wall -Wextra -pedantic -O2
 # 3. Hardware Build Settings (BSV & Vitis)
 #----------------------------------------------------------------------------------------
 VIVADO := $(XILINX_VIVADO)/bin/vivado
-BSCFLAGS := -show-schedule -aggressive-conditions
+BSCFLAGS := -show-schedule -aggressive-conditions -steps 10000000
+BSC_RTSFLAGS := +RTS -K512M -RTS
 BSCFLAGS_SYNTH := -bdir $(OBJ_DIR) -vdir $(OBJ_DIR)/verilog -simdir $(OBJ_DIR) -info-dir $(OBJ_DIR) -fdir $(OBJ_DIR)
 JOBS := 8
 VPPFLAGS := --vivado.param general.maxThreads=$(JOBS) --vivado.impl.jobs $(JOBS) --vivado.synth.jobs $(JOBS) --temp_dir $(BUILD_DIR) --log_dir $(BUILD_DIR) --report_dir $(BUILD_DIR) --report_level 2
@@ -31,11 +32,12 @@ host:
 #----------------------------------------------------------------------------------------
 # 6. Kernel Hardware Build (BSV -> Verilog -> XO -> XCLBIN)
 #----------------------------------------------------------------------------------------
-$(OBJ_DIR)/verilog/.done: $(wildcard *.bsv) $(wildcard *.v)
+$(OBJ_DIR)/verilog/.done: $(wildcard *.bsv) $(wildcard *.v) scripts/verilogcopy.sh
 	mkdir -p $(OBJ_DIR)
 	mkdir -p $(OBJ_DIR)/verilog
-	bsc $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -verilog -u -g kernel KernelTop.bsv
+	bsc $(BSC_RTSFLAGS) $(BSCFLAGS) $(BSCFLAGS_SYNTH) -remove-dollar -verilog -u -g kernel KernelTop.bsv
 	cd $(OBJ_DIR)/verilog/ && bash ../../scripts/verilogcopy.sh
+	test -f $(OBJ_DIR)/verilog/RegFile.v
 	cp *.v $(OBJ_DIR)/verilog/
 	@touch $@
 $(BUILD_DIR)/kernel.xo: ./kernel.xml ./scripts/package_kernel.tcl ./scripts/gen_xo.tcl $(OBJ_DIR)/verilog/.done

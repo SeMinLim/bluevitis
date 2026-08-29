@@ -12,7 +12,6 @@ using namespace std;
 static void initializeTestDataset( Config *config, Dataset *dataset ) {
 	config->alphabetMode = ALPHABET_DNA;
 	config->motifLength = 4;
-	config->numPipeline = 1;
 	config->maxUpdateNum = 2;
 	config->scoreThreshold = 249.0;
 	config->randomSeed = 1;

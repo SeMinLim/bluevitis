@@ -24,7 +24,6 @@ Model execution:
 	--output output/result \
 	--alphabet dna \
 	--motif-length 16 \
-	--pipelines 16 \
 	--max-updates 32768 \
 	--score-threshold 1.0 \
 	--seed 1 \

@@ -77,10 +77,6 @@ static void printUsage( const char *programName ) {
 	printf( "  --model                Run the bit-accurate accelerator software model\n" );
 	printf( "\n" );
 	printf( "Options:\n" );
-	printf( "  --pipelines <N>        Active Gibbs pipelines [default: %d, maximum: %d]\n",
-		DEFAULTNUMPIPELINE,
-		ACCELMAXPIPELINE
-	);
 	printf( "  --max-updates <N>      Maximum updates per pipeline [default: %d x sequence count]\n", DEFAULTMAXSWEEPNUM );
 	printf( "  --score-threshold <F>  Normalized score threshold in [0, 1] [default: %.2f]\n", DEFAULTSCORETHRESHOLD );
 	printf( "  --seed <N>             Random seed [default: %d]\n", DEFAULTSEED );
@@ -116,7 +112,6 @@ static double parseFloatingPoint( const char *value, const char *name ) {
 void parseArguments( int argc, char **argv, Config *config ) {
 	config->alphabetMode = -1;
 	config->motifLength = 0;
-	config->numPipeline = DEFAULTNUMPIPELINE;
 	config->maxUpdateNum = 0;
 	config->scoreThreshold = DEFAULTSCORETHRESHOLD;
 	config->randomSeed = DEFAULTSEED;
@@ -144,8 +139,6 @@ void parseArguments( int argc, char **argv, Config *config ) {
 			}
 		} else if ( string(argv[i]) == "--motif-length" && i + 1 < argc ) {
 			config->motifLength = (size_t)parseUnsignedInteger(argv[++i], "--motif-length");
-		} else if ( string(argv[i]) == "--pipelines" && i + 1 < argc ) {
-			config->numPipeline = (int)parseUnsignedInteger(argv[++i], "--pipelines");
 		} else if ( string(argv[i]) == "--max-updates" && i + 1 < argc ) {
 			config->maxUpdateNum = parseUnsignedInteger(argv[++i], "--max-updates");
 		} else if ( string(argv[i]) == "--score-threshold" && i + 1 < argc ) {
@@ -179,10 +172,6 @@ void parseArguments( int argc, char **argv, Config *config ) {
 	}
 	if ( config->useModel && config->xclbinFilename.empty() == false ) {
 		printf( "Use either --xclbin or --model, not both.\n" );
-		exit(1);
-	}
-	if ( config->numPipeline < 1 || config->numPipeline > ACCELMAXPIPELINE ) {
-		printf( "The number of pipelines must be in [1, %d].\n", ACCELMAXPIPELINE );
 		exit(1);
 	}
 	if ( config->scoreThreshold < 0.0 || config->scoreThreshold > 1.0 ) {

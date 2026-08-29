@@ -20,7 +20,7 @@ static void preparePipelineStates( const Config *config,
 		buildBPM(config, dataset, state.offsets, state.initialBPM);
 		state.bestScore = (uint32_t)calculateConsensusScore(config, dataset, state.initialBPM);
 		state.updateNum = 0;
-		state.terminated = pipelineIdx >= config->numPipeline;
+		state.terminated = false;
 		initializeRandomGenerator(&state.randomGenerator,
 					  config->randomSeed ^
 					  ((uint64_t)(pipelineIdx + 1) * 0xd2b74407b1ce6e93ULL));
@@ -144,9 +144,9 @@ void runAccelerator( const Config *config,
 	}
 
 	double elapsedTime = timeChecker() - startTime;
-	pipelineResults.resize((size_t)config->numPipeline);
+	pipelineResults.resize(ACCELMAXPIPELINE);
 	uint64_t rawScoreThreshold = calculateRawScoreThreshold(config, dataset);
-	for ( int pipelineIdx = 0; pipelineIdx < config->numPipeline; pipelineIdx ++ ) {
+	for ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
 		const AccelPipelineHostState &state = pipelineStates[(size_t)pipelineIdx];
 		PipelineResult &result = pipelineResults[(size_t)pipelineIdx];
 		result.bestOffsets = state.bestOffsets;

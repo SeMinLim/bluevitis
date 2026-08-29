@@ -202,7 +202,7 @@ void writeSummary( const Config *config,
 		outputFile << "Anchor Offset            : " << seedModel->anchorOffset << "\n";
 		outputFile << "Anchor Rank              : " << seedModel->anchorRank << "\n";
 	}
-	outputFile << "Pipeline Number          : " << config->numPipeline << "\n";
+	outputFile << "Pipeline Number          : " << ACCELMAXPIPELINE << "\n";
 	outputFile << "Selected Pipeline        : " << bestPipelineIdx << "\n";
 	outputFile << "Best Score               : " << bestResult.bestScore << "\n";
 	outputFile << "Normalized Best Score    : "

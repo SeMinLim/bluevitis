@@ -64,7 +64,7 @@ static void writeCommandHeader( const Config *config,
 	header[7] = (uint8_t)dataset->alphabetSize;
 	writeUInt16(header + 8, (uint16_t)dataset->sequenceLength);
 	header[10] = (uint8_t)config->motifLength;
-	header[11] = (uint8_t)config->numPipeline;
+	header[11] = (uint8_t)ACCELMAXPIPELINE;
 	writeUInt32(header + 16, (uint32_t)calculateRawScoreThreshold(config, dataset));
 	writeUInt32(header + 20, (uint32_t)config->maxUpdateNum);
 	writeUInt32(header + 24, batchSize);
@@ -122,7 +122,7 @@ void buildBootstrapCommand( const Config *config,
 			writeUInt32(stateWord + stateIdx * 4, state.randomGenerator.state[stateIdx]);
 		}
 		writeUInt32(stateWord + 16, state.bestScore);
-		stateWord[20] = pipelineIdx < config->numPipeline ? 1 : 0;
+		stateWord[20] = 1;
 		appendMatrixColumns(config, dataset, state.initialBPM, input);
 		appendMatrixColumns(config, dataset, state.initialLPMQ12, input);
 	}
