@@ -6,9 +6,9 @@ The kernel uses the direct `HOST[0]` memory connection from `kernel_example_add_
 ## Prototype configuration
 
 - `NumPipeline = 16`
-- `NumPE_Profiler = 128`
+- `NumPE_Profiler = 16`
 - `NumPE_LPM = 4`
-- physical dual-mode PWL lanes: `max(NumPE_Profiler, NumPE_LPM) = 128`
+- physical dual-mode PWL lanes: `max(NumPE_Profiler, NumPE_LPM) = 16`
 - maximum sequence length: 1024 symbols
 - maximum motif length: 128 symbols
 - maximum alphabet size: 20 symbols

@@ -61,65 +61,41 @@ endfunction
 
 function LogProb maxLogProbSegment(Vector#(NumPE_Profiler, LogProb) value,
                                    Bit#(ProfilerValidWidth) validNum);
-    Vector#(128, LogProb) masked = newVector;
-    Vector#(64, LogProb) max2 = newVector;
-    Vector#(32, LogProb) max4 = newVector;
-    Vector#(16, LogProb) max8 = newVector;
-    Vector#(8, LogProb) max16 = newVector;
-    Vector#(4, LogProb) max32 = newVector;
-    Vector#(2, LogProb) max64 = newVector;
+	Vector#(16, LogProb) masked = newVector;
+	Vector#(8, LogProb) max2 = newVector;
+	Vector#(4, LogProb) max4 = newVector;
+	Vector#(2, LogProb) max8 = newVector;
 
-    for ( Integer i = 0; i < 128; i = i + 1 ) begin
-        masked[i] = fromInteger(i) < validNum ? value[i] : 0;
-    end
-    for ( Integer i = 0; i < 64; i = i + 1 ) begin
-        max2[i] = masked[2 * i] > masked[2 * i + 1] ? masked[2 * i] : masked[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 32; i = i + 1 ) begin
-        max4[i] = max2[2 * i] > max2[2 * i + 1] ? max2[2 * i] : max2[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 16; i = i + 1 ) begin
-        max8[i] = max4[2 * i] > max4[2 * i + 1] ? max4[2 * i] : max4[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 8; i = i + 1 ) begin
-        max16[i] = max8[2 * i] > max8[2 * i + 1] ? max8[2 * i] : max8[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 4; i = i + 1 ) begin
-        max32[i] = max16[2 * i] > max16[2 * i + 1] ? max16[2 * i] : max16[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 2; i = i + 1 ) begin
-        max64[i] = max32[2 * i] > max32[2 * i + 1] ? max32[2 * i] : max32[2 * i + 1];
-    end
-    return max64[0] > max64[1] ? max64[0] : max64[1];
+	for ( Integer i = 0; i < 16; i = i + 1 ) begin
+		masked[i] = fromInteger(i) < validNum ? value[i] : 0;
+	end
+	for ( Integer i = 0; i < 8; i = i + 1 ) begin
+		max2[i] = masked[2 * i] > masked[2 * i + 1] ? masked[2 * i] : masked[2 * i + 1];
+	end
+	for ( Integer i = 0; i < 4; i = i + 1 ) begin
+		max4[i] = max2[2 * i] > max2[2 * i + 1] ? max2[2 * i] : max2[2 * i + 1];
+	end
+	for ( Integer i = 0; i < 2; i = i + 1 ) begin
+		max8[i] = max4[2 * i] > max4[2 * i + 1] ? max4[2 * i] : max4[2 * i + 1];
+	end
+	return max8[0] > max8[1] ? max8[0] : max8[1];
 endfunction
 
 function SegmentMass sumSegmentWeight(Vector#(NumPE_Profiler, PwlValue) weight);
-    Vector#(64, SegmentMass) sum2 = newVector;
-    Vector#(32, SegmentMass) sum4 = newVector;
-    Vector#(16, SegmentMass) sum8 = newVector;
-    Vector#(8, SegmentMass) sum16 = newVector;
-    Vector#(4, SegmentMass) sum32 = newVector;
-    Vector#(2, SegmentMass) sum64 = newVector;
+	Vector#(8, SegmentMass) sum2 = newVector;
+	Vector#(4, SegmentMass) sum4 = newVector;
+	Vector#(2, SegmentMass) sum8 = newVector;
 
-    for ( Integer i = 0; i < 64; i = i + 1 ) begin
-        sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
-    end
-    for ( Integer i = 0; i < 32; i = i + 1 ) begin
-        sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 16; i = i + 1 ) begin
-        sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 8; i = i + 1 ) begin
-        sum16[i] = sum8[2 * i] + sum8[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 4; i = i + 1 ) begin
-        sum32[i] = sum16[2 * i] + sum16[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 2; i = i + 1 ) begin
-        sum64[i] = sum32[2 * i] + sum32[2 * i + 1];
-    end
-    return sum64[0] + sum64[1];
+	for ( Integer i = 0; i < 8; i = i + 1 ) begin
+		sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
+	end
+	for ( Integer i = 0; i < 4; i = i + 1 ) begin
+		sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
+	end
+	for ( Integer i = 0; i < 2; i = i + 1 ) begin
+		sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
+	end
+	return sum8[0] + sum8[1];
 endfunction
 
 function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
@@ -127,69 +103,42 @@ function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
                                         SegmentMass totalMass,
                                         Bit#(24) randomFraction,
                                         Bit#(ProfilerValidWidth) validNum);
-    Vector#(64, SegmentMass) sum2 = newVector;
-    Vector#(32, SegmentMass) sum4 = newVector;
-    Vector#(16, SegmentMass) sum8 = newVector;
-    Vector#(8, SegmentMass) sum16 = newVector;
-    Vector#(4, SegmentMass) sum32 = newVector;
-    Vector#(2, SegmentMass) sum64 = newVector;
+	Vector#(8, SegmentMass) sum2 = newVector;
+	Vector#(4, SegmentMass) sum4 = newVector;
+	Vector#(2, SegmentMass) sum8 = newVector;
 
-    for ( Integer i = 0; i < 64; i = i + 1 ) begin
-        sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
-    end
-    for ( Integer i = 0; i < 32; i = i + 1 ) begin
-        sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 16; i = i + 1 ) begin
-        sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 8; i = i + 1 ) begin
-        sum16[i] = sum8[2 * i] + sum8[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 4; i = i + 1 ) begin
-        sum32[i] = sum16[2 * i] + sum16[2 * i + 1];
-    end
-    for ( Integer i = 0; i < 2; i = i + 1 ) begin
-        sum64[i] = sum32[2 * i] + sum32[2 * i + 1];
-    end
+	for ( Integer i = 0; i < 8; i = i + 1 ) begin
+		sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
+	end
+	for ( Integer i = 0; i < 4; i = i + 1 ) begin
+		sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
+	end
+	for ( Integer i = 0; i < 2; i = i + 1 ) begin
+		sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
+	end
 
-    UInt#(50) product = zeroExtend(totalMass) * zeroExtend(unpack(randomFraction));
-    SegmentMass remaining = truncate(product >> 24);
-    Bit#(ProfilerValidWidth) selected = 0;
+	UInt#(50) product = zeroExtend(totalMass) * zeroExtend(unpack(randomFraction));
+	SegmentMass remaining = truncate(product >> 24);
+	Bit#(ProfilerValidWidth) selected = 0;
 
-    if ( remaining >= sum64[0] ) begin
-        selected = selected + 64;
-        remaining = remaining - sum64[0];
-    end
-    Bit#(2) index32 = truncate(selected >> 5);
-    if ( remaining >= sum32[index32] ) begin
-        selected = selected + 32;
-        remaining = remaining - sum32[index32];
-    end
-    Bit#(3) index16 = truncate(selected >> 4);
-    if ( remaining >= sum16[index16] ) begin
-        selected = selected + 16;
-        remaining = remaining - sum16[index16];
-    end
-    Bit#(4) index8 = truncate(selected >> 3);
-    if ( remaining >= sum8[index8] ) begin
-        selected = selected + 8;
-        remaining = remaining - sum8[index8];
-    end
-    Bit#(5) index4 = truncate(selected >> 2);
-    if ( remaining >= sum4[index4] ) begin
-        selected = selected + 4;
-        remaining = remaining - sum4[index4];
-    end
-    Bit#(6) index2 = truncate(selected >> 1);
-    if ( remaining >= sum2[index2] ) begin
-        selected = selected + 2;
-        remaining = remaining - sum2[index2];
-    end
-    Bit#(ProfilerOffsetWidth) selectedIdx = truncate(selected);
-    if ( remaining >= zeroExtend(weight[selectedIdx]) ) selected = selected + 1;
-    if ( selected >= validNum ) selected = validNum - 1;
-    return truncate(selected);
+	if ( remaining >= sum8[0] ) begin
+		selected = selected + 8;
+		remaining = remaining - sum8[0];
+	end
+	Bit#(2) index4 = truncate(selected >> 2);
+	if ( remaining >= sum4[index4] ) begin
+		selected = selected + 4;
+		remaining = remaining - sum4[index4];
+	end
+	Bit#(3) index2 = truncate(selected >> 1);
+	if ( remaining >= sum2[index2] ) begin
+		selected = selected + 2;
+		remaining = remaining - sum2[index2];
+	end
+	Bit#(ProfilerOffsetWidth) selectedIdx = truncate(selected);
+	if ( remaining >= zeroExtend(weight[selectedIdx]) ) selected = selected + 1;
+	if ( selected >= validNum ) selected = validNum - 1;
+	return truncate(selected);
 endfunction
 
 module mkGibbsPipeline(GibbsPipelineIfc);

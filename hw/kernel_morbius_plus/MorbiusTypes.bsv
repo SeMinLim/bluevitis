@@ -4,7 +4,7 @@ import Vector::*;
 
 
 typedef 16 NumPipeline;
-typedef 128 NumPE_Profiler;
+typedef 16 NumPE_Profiler;
 typedef 4 NumPE_LPM;
 typedef TLog#(NumPipeline) PipelineIndexWidth;
 typedef TLog#(NumPE_Profiler) ProfilerOffsetWidth;
