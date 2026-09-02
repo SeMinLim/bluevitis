@@ -61,15 +61,24 @@ static size_t calculateInputBufferSize( const Config *config ) {
 }
 
 static size_t calculateOutputBufferSize( const Config *config ) {
-	if ( config->batchSize > SIZE_MAX / ACCELBEATBYTES - 1 ) {
+	if ( config->batchSize >
+	     (SIZE_MAX - ACCELBEATBYTES) / ACCELRESULTBYTES ) {
 		printf( "The requested accelerator batch size is too large.\n" );
 		fflush( stdout );
 		exit(1);
 	}
-	size_t batchBytes = (config->batchSize + 1) * ACCELBEATBYTES;
-	size_t bootstrapBytes = 2 * ACCELBEATBYTES;
+
+	size_t batchBytes =
+		config->batchSize * ACCELRESULTBYTES +
+		ACCELBEATBYTES;
+	size_t bootstrapBytes =
+		ACCELRESULTBYTES +
+		ACCELBEATBYTES;
+
 	size_t outputBufferSize = bootstrapBytes;
-	if ( batchBytes > outputBufferSize ) outputBufferSize = batchBytes;
+	if ( batchBytes > outputBufferSize ) {
+		outputBufferSize = batchBytes;
+	}
 	return roundBufferSize(outputBufferSize);
 }
 
