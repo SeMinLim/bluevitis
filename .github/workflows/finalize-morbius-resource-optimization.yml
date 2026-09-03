@@ -1,0 +1,238 @@
+name: Finalize Morbius Plus resource optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/finalize-morbius-resource-optimization.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: morbius-resource-optimization-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Recover exact staged archive
+        id: recover
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          expected = [
+              ('chunk000', 2000, '2e589c3b1226146461337d20bfa50ff48f984479'),
+              ('chunk001', 2000, '0b0e27fe447a75f1b20520ff9a5ae48e9046ccdd'),
+              ('chunk002', 2000, 'da68c62629662371805322743562f348baf4ba1f'),
+              ('chunk003', 2000, 'dea82d92367b73404549678deb68f80b25bc082c'),
+              ('chunk004', 2000, 'a4675e29875bb01441eec85f8ae12ccc7cb7bad4'),
+              ('chunk005', 2000, '0f46d5c0f991a30feeb39e375206299485489d2d'),
+              ('chunk006', 2000, '0846622e8902a6210cb5fc46be63fa064c144632'),
+              ('chunk007', 2000, '118f76228325e7a2400194483a957fe9cd7df50f'),
+              ('chunk008', 2000, 'cd42a79fd28a0bc79e4a0c74965c20e966e88327'),
+              ('chunk009', 2000, '78fd9781e791e46e06b9d6fdeb1292bbf7690cc4'),
+              ('chunk010', 2000, '788b8f72a3132b9c83f3b5da61cb08bbe51f9fa2'),
+              ('chunk011', 2000, '72f531097528804be20814933443917183da3494'),
+              ('chunk012', 2000, '1604aba4190c9191e9343fc367049a8bcefc8ff9'),
+              ('chunk013', 2000, 'd32eb125602da49bacac2ed876334fafcda58abf'),
+              ('chunk014', 2000, '4b96f27969cc37b9af20d4f5a88aedce57a4af2e'),
+              ('chunk015', 2000, '297ebb16992905998d5265e91546dec3e0678cf4'),
+              ('chunk016', 2000, '24683f8106d125ddc2a01c1aa6ae3599bae5e1fb'),
+              ('chunk017', 2000, '19c69e3a2ad653027dcaea4e7dbd05f09e1e79ec'),
+              ('chunk018', 2000, '8cc1afef60651dca8091cf5820462fccd71302b1'),
+              ('chunk019', 2000, 'd8ec112fe2bb64ab563a8cdaa9e74dc5144c171e'),
+              ('chunk020', 2000, 'e9266626813dab4c1fd22eadfb14d26ad86d3403'),
+              ('chunk021', 96, '9b5439db498382b93dc00a91951b9ee12e7a246d'),
+          ]
+
+          sources = []
+          for root_name in ('.github/payload', '.github/payload2'):
+              root = Path(root_name)
+              if root.exists():
+                  for path in sorted(root.iterdir()):
+                      if path.is_file():
+                          sources.append((str(path), ''.join(path.read_text().split())))
+
+          recovered = []
+          missing = []
+          report = []
+          for name, length, expected_sha in expected:
+              match = None
+              location = None
+              for source_name, text in sources:
+                  if len(text) < length:
+                      continue
+                  for offset in range(len(text) - length + 1):
+                      candidate = text[offset:offset + length]
+                      if hashlib.sha1(candidate.encode()).hexdigest() == expected_sha:
+                          match = candidate
+                          location = f'{source_name}:{offset}'
+                          break
+                  if match is not None:
+                      break
+              if match is None:
+                  missing.append(name)
+                  report.append(f'{name} MISSING')
+              else:
+                  recovered.append(match)
+                  report.append(f'{name} {location}')
+
+          Path('.github/recovery-report.txt').write_text('\n'.join(report) + '\n')
+          if missing:
+              Path('.github/recovery-missing.txt').write_text('\n'.join(missing) + '\n')
+              print('Missing:', ', '.join(missing))
+              Path('/tmp/recovery_complete').write_text('false')
+          else:
+              payload = ''.join(recovered)
+              if len(payload) != 42096:
+                  raise RuntimeError(f'Unexpected payload length: {len(payload)}')
+              Path('/tmp/morbius_payload.b64').write_text(payload)
+              Path('/tmp/recovery_complete').write_text('true')
+          PY
+          echo "complete=$(cat /tmp/recovery_complete)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit missing-chunk report
+        if: steps.recover.outputs.complete != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'SeMinLim'
+          git config user.email 'seminl1@kookmin.ac.kr'
+          git add .github/recovery-report.txt .github/recovery-missing.txt
+          git commit -m 'Report missing Morbius+ optimization payload chunks'
+          git push origin HEAD:main
+
+      - name: Decode and extract optimized source
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d /tmp/morbius_payload.b64 > /tmp/morbius_payload.tar.gz
+          gzip -t /tmp/morbius_payload.tar.gz
+          tar -xzf /tmp/morbius_payload.tar.gz -C .
+          rm -f hw/kernel_morbius_plus/PwlLane.bsv
+
+      - name: Install Bluespec compiler
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 \
+            https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-ubuntu-24.04.tar.gz \
+            -o /tmp/bsc.tar.gz
+          mkdir -p /tmp/bsc
+          tar -xzf /tmp/bsc.tar.gz -C /tmp/bsc
+          BSC_BIN=$(find /tmp/bsc -type f -path '*/bin/bsc' | head -n 1)
+          test -n "$BSC_BIN"
+          BSC_HOME=$(dirname "$(dirname "$BSC_BIN")")
+          VERILOG_DIR=$(find "$BSC_HOME" -type d -path '*/Verilog' | head -n 1)
+          test -n "$VERILOG_DIR"
+          echo "$(dirname "$BSC_BIN")" >> "$GITHUB_PATH"
+          echo "BLUESPECDIR=$(dirname "$VERILOG_DIR")" >> "$GITHUB_ENV"
+          "$BSC_BIN" -version
+
+      - name: Validate host model and protocol
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C sw/host_morbius_plus clean
+          make -C sw/host_morbius_plus model
+          make -C sw/host_morbius_plus test
+          rm -rf /tmp/morbius_model_output
+          sw/host_morbius_plus/obj/model \
+            --input sw/host_morbius_plus/test/DNA_TEST.fasta \
+            --output /tmp/morbius_model_output/result \
+            --alphabet dna \
+            --motif-length 16 \
+            --max-updates 16 \
+            --score-threshold 1.0 \
+            --seed 1 \
+            --batch-size 4
+
+      - name: Elaborate universal RTL
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL=hw/kernel_morbius_plus
+          OBJ=/tmp/morbius_bsc_universal
+          mkdir -p "$OBJ/verilog"
+          cd "$KERNEL"
+          bsc +RTS -K512M -RTS \
+            -show-schedule -aggressive-conditions -steps 10000000 \
+            -bdir "$OBJ" -vdir "$OBJ/verilog" -simdir "$OBJ" \
+            -info-dir "$OBJ" -fdir "$OBJ" \
+            -remove-dollar -verilog -u -g kernel KernelTop.bsv
+          grep -R -q 'BRAM2' "$OBJ/verilog"
+          if grep -R -q 'RegFile #' "$OBJ/verilog"; then
+            echo 'Distributed RegFile storage remains in optimized RTL.'
+            exit 1
+          fi
+
+      - name: Elaborate DNA-specialized RTL
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL=hw/kernel_morbius_plus
+          OBJ=/tmp/morbius_bsc_dna
+          mkdir -p "$OBJ/verilog"
+          cd "$KERNEL"
+          bsc +RTS -K512M -RTS \
+            -show-schedule -aggressive-conditions -steps 10000000 \
+            -D MORBIUS_DNA_ONLY \
+            -bdir "$OBJ" -vdir "$OBJ/verilog" -simdir "$OBJ" \
+            -info-dir "$OBJ" -fdir "$OBJ" \
+            -remove-dollar -verilog -u -g kernel KernelTop.bsv
+
+      - name: Run Bluesim regression
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL=hw/kernel_morbius_plus
+          OBJ=/tmp/morbius_bluesim
+          mkdir -p "$OBJ"
+          cd "$KERNEL"
+          bsc +RTS -K512M -RTS \
+            -show-schedule -aggressive-conditions -steps 10000000 \
+            -bdir "$OBJ" -simdir "$OBJ" -info-dir "$OBJ" \
+            -u -sim -g mkTestGibbsPipeline TestGibbsPipeline.bsv
+          bsc +RTS -K512M -RTS \
+            -bdir "$OBJ" -simdir "$OBJ" -info-dir "$OBJ" \
+            -sim -e mkTestGibbsPipeline -o "$OBJ/test_gibbs"
+          "$OBJ/test_gibbs"
+
+      - name: Commit optimized source directly to main
+        if: steps.recover.outputs.complete == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .github/payload .github/payload2
+          rm -f .github/recovery-report.txt .github/recovery-missing.txt
+          rm -f .github/workflows/apply-morbius-resource-optimization.yml
+          rm -f .github/workflows/recover-and-apply-morbius-resource-optimization.yml
+          rm -f .github/workflows/finalize-morbius-resource-optimization.yml
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
+          make -C sw/host_morbius_plus clean
+          git config user.name 'SeMinLim'
+          git config user.email 'seminl1@kookmin.ac.kr'
+          git add -A
+          git commit -m 'Optimize Morbius+ U50 resource architecture'
+          git push origin HEAD:main
