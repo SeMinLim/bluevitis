@@ -1,0 +1,107 @@
+name: Recover and apply Morbius Plus resource optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-and-apply-morbius-resource-optimization.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recover-and-apply-morbius-resource-optimization
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Recover exact base64 chunks from staged payload fragments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+
+          expected = [
+              ('chunk000', 2000, '2e589c3b1226146461337d20bfa50ff48f984479'),
+              ('chunk001', 2000, '0b0e27fe447a75f1b20520ff9a5ae48e9046ccdd'),
+              ('chunk002', 2000, 'da68c62629662371805322743562f348baf4ba1f'),
+              ('chunk003', 2000, 'dea82d92367b73404549678deb68f80b25bc082c'),
+              ('chunk004', 2000, 'a4675e29875bb01441eec85f8ae12ccc7cb7bad4'),
+              ('chunk005', 2000, '0f46d5c0f991a30feeb39e375206299485489d2d'),
+              ('chunk006', 2000, '0846622e8902a6210cb5fc46be63fa064c144632'),
+              ('chunk007', 2000, '118f76228325e7a2400194483a957fe9cd7df50f'),
+              ('chunk008', 2000, 'cd42a79fd28a0bc79e4a0c74965c20e966e88327'),
+              ('chunk009', 2000, '78fd9781e791e46e06b9d6fdeb1292bbf7690cc4'),
+              ('chunk010', 2000, '788b8f72a3132b9c83f3b5da61cb08bbe51f9fa2'),
+              ('chunk011', 2000, '72f531097528804be20814933443917183da3494'),
+              ('chunk012', 2000, '1604aba4190c9191e9343fc367049a8bcefc8ff9'),
+              ('chunk013', 2000, 'd32eb125602da49bacac2ed876334fafcda58abf'),
+              ('chunk014', 2000, '4b96f27969cc37b9af20d4f5a88aedce57a4af2e'),
+              ('chunk015', 2000, '297ebb16992905998d5265e91546dec3e0678cf4'),
+              ('chunk016', 2000, '24683f8106d125ddc2a01c1aa6ae3599bae5e1fb'),
+              ('chunk017', 2000, '19c69e3a2ad653027dcaea4e7dbd05f09e1e79ec'),
+              ('chunk018', 2000, '8cc1afef60651dca8091cf5820462fccd71302b1'),
+              ('chunk019', 2000, 'd8ec112fe2bb64ab563a8cdaa9e74dc5144c171e'),
+              ('chunk020', 2000, 'e9266626813dab4c1fd22eadfb14d26ad86d3403'),
+              ('chunk021', 96, '9b5439db498382b93dc00a91951b9ee12e7a246d'),
+          ]
+
+          sources = []
+          for root_name in ('.github/payload', '.github/payload2'):
+              root = Path(root_name)
+              if root.exists():
+                  for path in sorted(root.iterdir()):
+                      if path.is_file():
+                          text = ''.join(path.read_text().split())
+                          sources.append((str(path), text))
+
+          recovered = []
+          missing = []
+          for name, length, expected_sha in expected:
+              match = None
+              for source_name, text in sources:
+                  if len(text) < length:
+                      continue
+                  for offset in range(0, len(text) - length + 1):
+                      candidate = text[offset:offset + length]
+                      if hashlib.sha1(candidate.encode()).hexdigest() == expected_sha:
+                          match = candidate
+                          print(f'{name}: FOUND in {source_name} at offset {offset}')
+                          break
+                  if match is not None:
+                      break
+              if match is None:
+                  print(f'{name}: MISSING')
+                  missing.append(name)
+              else:
+                  recovered.append(match)
+
+          print('Missing chunks:', ', '.join(missing) if missing else 'none')
+          if missing:
+              raise SystemExit(2)
+
+          payload = ''.join(recovered)
+          if len(payload) != 42096:
+              raise RuntimeError(f'Unexpected recovered length: {len(payload)}')
+          Path('/tmp/morbius_payload.b64').write_text(payload)
+          PY
+
+      - name: Verify recovered archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d /tmp/morbius_payload.b64 > /tmp/morbius_payload.tar.gz
+          gzip -t /tmp/morbius_payload.tar.gz
+          tar -tzf /tmp/morbius_payload.tar.gz
