@@ -1,18 +1,26 @@
 # Morbius+ U50 Hardware
 
-This directory is a blueVitis-compatible RTL kernel for the Alveo U50.
-The kernel uses the direct `HOST[0]` memory connection from `kernel_example_add_host` and retains sixteen independent Gibbs pipeline states on chip.
+This directory contains the blueVitis-compatible Morbius+ RTL kernel for the Alveo U50. The kernel uses the direct `HOST[0]` connection and retains sixteen independent Gibbs search states on chip.
 
 ## Prototype configuration
 
 - `NumPipeline = 16`
 - `NumPE_Profiler = 16`
 - `NumPE_LPM = 4`
-- physical dual-mode PWL lanes: `max(NumPE_Profiler, NumPE_LPM) = 16`
 - maximum sequence length: 1024 symbols
 - maximum motif length: 128 symbols
 - maximum alphabet size: 20 symbols
 - target clock: 250 MHz
+
+## Resource-oriented microarchitecture
+
+- one shared controller advances sixteen independent Gibbs states
+- packed 5-bit sequence rows and bounded 16-symbol windows replace wide variable shifts
+- BPM, LPM, and tentative-motif state use explicit block RAM
+- one vector PWL array per Gibbs state contains eight log/exp lanes and eight exp-only lanes
+- Phase 2 reuses one weight reduction tree and performs streaming weighted-reservoir sampling
+- tentative-motif insertion and complete-state score calculation share one pass
+- the input and output ports use specialized burst read and burst write masters
 
 ## Standalone BSV test
 

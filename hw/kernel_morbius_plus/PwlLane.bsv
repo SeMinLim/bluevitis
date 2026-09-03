@@ -1,108 +1,85 @@
 package PwlLane;
 
-import FIFO::*;
 import FIFOF::*;
+import Vector::*;
 
 import MorbiusTypes::*;
 
 
-interface PwlLaneIfc;
-	method Action put(PwlRequest request);
-	method ActionValue#(PwlResponse) get;
+interface PwlArrayIfc;
+	method Action put(PwlArrayRequest request);
+	method ActionValue#(PwlArrayResponse) get;
 endinterface
 
-function UInt#(19) logBase(Bit#(4) idx);
-	case ( idx )
-		0:  return 0;
-		1:  return 22928;
-		2:  return 44545;
-		3:  return 64993;
-		4:  return 84392;
-		5:  return 102844;
-		6:  return 120437;
-		7:  return 137249;
-		8:  return 153344;
-		9:  return 168783;
-		10: return 183616;
-		11: return 197889;
-		12: return 211643;
-		13: return 224915;
-		14: return 237736;
-		default: return 250137;
+
+typedef struct {
+	Bool valid;
+	UInt#(5) integerPart;
+	Bool underflow;
+	UInt#(19) base;
+	UInt#(19) delta;
+	Bit#(8) residual;
+} PwlLaneStage1 deriving (Bits, Eq, FShow);
+
+typedef struct {
+	PwlMode mode;
+	Vector#(NumPE_Profiler, PwlLaneStage1) lane;
+} PwlStage1 deriving (Bits, Eq, FShow);
+
+typedef struct {
+	Bool valid;
+	UInt#(5) integerPart;
+	Bool underflow;
+	UInt#(19) base;
+	UInt#(27) product;
+} PwlLaneStage2 deriving (Bits, Eq, FShow);
+
+typedef struct {
+	PwlMode mode;
+	Vector#(NumPE_Profiler, PwlLaneStage2) lane;
+} PwlStage2 deriving (Bits, Eq, FShow);
+
+
+function Tuple2#(UInt#(19), UInt#(19)) getLogCoefficient(Bit#(4) interval);
+	case ( interval )
+		0: return tuple2(0, 22928);
+		1: return tuple2(22928, 21617);
+		2: return tuple2(44545, 20448);
+		3: return tuple2(64993, 19399);
+		4: return tuple2(84392, 18452);
+		5: return tuple2(102844, 17594);
+		6: return tuple2(120437, 16811);
+		7: return tuple2(137249, 16096);
+		8: return tuple2(153344, 15439);
+		9: return tuple2(168783, 14833);
+		10: return tuple2(183616, 14273);
+		11: return tuple2(197889, 13754);
+		12: return tuple2(211643, 13271);
+		13: return tuple2(224915, 12821);
+		14: return tuple2(237736, 12401);
+		default: return tuple2(250137, 12007);
 	endcase
 endfunction
 
-function UInt#(19) logDelta(Bit#(4) idx);
-	case ( idx )
-		0:  return 22928;
-		1:  return 21617;
-		2:  return 20448;
-		3:  return 19399;
-		4:  return 18452;
-		5:  return 17594;
-		6:  return 16811;
-		7:  return 16096;
-		8:  return 15439;
-		9:  return 14833;
-		10: return 14273;
-		11: return 13754;
-		12: return 13271;
-		13: return 12821;
-		14: return 12401;
-		default: return 12007;
+function Tuple2#(UInt#(19), UInt#(19)) getExpCoefficient(Bit#(4) interval);
+	case ( interval )
+		0: return tuple2(262144, 11114);
+		1: return tuple2(251030, 10643);
+		2: return tuple2(240387, 10192);
+		3: return tuple2(230195, 9760);
+		4: return tuple2(220436, 9346);
+		5: return tuple2(211090, 8950);
+		6: return tuple2(202141, 8570);
+		7: return tuple2(193571, 8207);
+		8: return tuple2(185364, 7859);
+		9: return tuple2(177505, 7526);
+		10: return tuple2(169979, 7207);
+		11: return tuple2(162773, 6901);
+		12: return tuple2(155872, 6608);
+		13: return tuple2(149263, 6328);
+		14: return tuple2(142935, 6060);
+		default: return tuple2(136875, 5803);
 	endcase
-endfunction
-
-function UInt#(19) expBase(Bit#(4) idx);
-	case ( idx )
-		0:  return 262144;
-		1:  return 251030;
-		2:  return 240387;
-		3:  return 230195;
-		4:  return 220436;
-		5:  return 211090;
-		6:  return 202141;
-		7:  return 193571;
-		8:  return 185364;
-		9:  return 177505;
-		10: return 169979;
-		11: return 162773;
-		12: return 155872;
-		13: return 149263;
-		14: return 142935;
-		default: return 136875;
-	endcase
-endfunction
-
-function UInt#(19) expDelta(Bit#(4) idx);
-	case ( idx )
-		0:  return 11114;
-		1:  return 10643;
-		2:  return 10192;
-		3:  return 9760;
-		4:  return 9346;
-		5:  return 8950;
-		6:  return 8570;
-		7:  return 8207;
-		8:  return 7859;
-		9:  return 7526;
-		10: return 7207;
-		11: return 6901;
-		12: return 6608;
-		13: return 6328;
-		14: return 6060;
-		default: return 5803;
-	endcase
-endfunction
-
-function UInt#(19) interpolate(UInt#(19) base,
-				      UInt#(19) delta,
-				      Bit#(8) residual,
-				      Bool subtractCorrection);
-	UInt#(27) product = zeroExtend(delta) * zeroExtend(unpack(residual));
-	UInt#(20) correction = truncate((product + 128) >> 8);
-	if ( subtractCorrection ) return base - truncate(correction);
-	else return base + truncate(correction);
 endfunction
 
 function UInt#(5) leadingOne(UInt#(18) count);
@@ -127,67 +104,240 @@ function UInt#(5) leadingOne(UInt#(18) count);
 	return result;
 endfunction
 
-function PwlValue calculateLog2(UInt#(32) inputValue);
-	UInt#(18) count = truncate(inputValue);
-	UInt#(5) integerPart = leadingOne(count);
-	UInt#(18) leadingValue = 1 << integerPart;
-	UInt#(30) numerator = zeroExtend(count - leadingValue) << 12;
-	UInt#(12) fractionCode = truncate(numerator >> integerPart);
-	Bit#(12) fractionBits = pack(fractionCode);
-	Bit#(4) interval = truncate(fractionBits >> 8);
-	Bit#(8) residual = truncate(fractionBits);
-	UInt#(19) fractionQ18 = interpolate(logBase(interval),
-						   logDelta(interval),
-						   residual,
-						   False);
-	UInt#(13) fractionQ12 = truncate((fractionQ18 + 32) >> 6);
-	UInt#(6) adjustedInteger = zeroExtend(integerPart);
-	UInt#(12) adjustedFraction = truncate(fractionQ12);
-	if ( fractionQ12 >= 4096 ) begin
-		adjustedInteger = adjustedInteger + 1;
-		adjustedFraction = truncate(fractionQ12 - 4096);
+function UInt#(18) leadingValue(UInt#(5) shift);
+	case ( shift )
+		0: return 1;
+		1: return 2;
+		2: return 4;
+		3: return 8;
+		4: return 16;
+		5: return 32;
+		6: return 64;
+		7: return 128;
+		8: return 256;
+		9: return 512;
+		10: return 1024;
+		11: return 2048;
+		12: return 4096;
+		13: return 8192;
+		14: return 16384;
+		15: return 32768;
+		16: return 65536;
+		default: return 131072;
+	endcase
+endfunction
+
+function UInt#(30) boundedShiftRight30(UInt#(30) value, UInt#(5) shift);
+	case ( shift )
+		0: return value;
+		1: return value >> 1;
+		2: return value >> 2;
+		3: return value >> 3;
+		4: return value >> 4;
+		5: return value >> 5;
+		6: return value >> 6;
+		7: return value >> 7;
+		8: return value >> 8;
+		9: return value >> 9;
+		10: return value >> 10;
+		11: return value >> 11;
+		12: return value >> 12;
+		13: return value >> 13;
+		14: return value >> 14;
+		15: return value >> 15;
+		16: return value >> 16;
+		default: return value >> 17;
+	endcase
+endfunction
+
+function WeightValue boundedShiftRight19(WeightValue value, UInt#(5) shift);
+	case ( shift )
+		0: return value;
+		1: return value >> 1;
+		2: return value >> 2;
+		3: return value >> 3;
+		4: return value >> 4;
+		5: return value >> 5;
+		6: return value >> 6;
+		7: return value >> 7;
+		8: return value >> 8;
+		9: return value >> 9;
+		10: return value >> 10;
+		11: return value >> 11;
+		12: return value >> 12;
+		13: return value >> 13;
+		14: return value >> 14;
+		15: return value >> 15;
+		16: return value >> 16;
+		17: return value >> 17;
+		18: return value >> 18;
+		default: return 0;
+	endcase
+endfunction
+
+function PwlLaneStage1 prepareDualModeLane(PwlMode mode,
+					    PwlInput inputValue,
+					    Bool valid);
+	UInt#(5) integerPart = 0;
+	Bool underflow = False;
+	Bit#(4) interval = 0;
+	Bit#(8) residual = 0;
+	UInt#(19) base = 0;
+	UInt#(19) delta = 0;
+
+	if ( mode == PWL_LOG2 ) begin
+		UInt#(18) count = truncate(inputValue);
+		if ( count == 0 ) count = 1;
+		integerPart = leadingOne(count);
+		UInt#(18) lead = leadingValue(integerPart);
+		UInt#(30) numerator = zeroExtend(count - lead) << 12;
+		UInt#(12) fractionCode = truncate(boundedShiftRight30(numerator,
+								integerPart));
+		Bit#(12) fractionBits = pack(fractionCode);
+		interval = fractionBits[11:8];
+		residual = fractionBits[7:0];
+		Tuple2#(UInt#(19), UInt#(19)) coefficient = getLogCoefficient(interval);
+		base = tpl_1(coefficient);
+		delta = tpl_2(coefficient);
+	end else begin
+		UInt#(12) expInteger = truncate(inputValue >> 12);
+		underflow = expInteger > 18;
+		integerPart = truncate(expInteger);
+		Bit#(12) fractionCode = truncate(pack(inputValue));
+		interval = fractionCode[11:8];
+		residual = fractionCode[7:0];
+		Tuple2#(UInt#(19), UInt#(19)) coefficient = getExpCoefficient(interval);
+		base = tpl_1(coefficient);
+		delta = tpl_2(coefficient);
 	end
-	UInt#(19) combinedValue = (zeroExtend(adjustedInteger) << 12) | zeroExtend(adjustedFraction);
-	return combinedValue;
+
+	return PwlLaneStage1{
+		valid: valid,
+		integerPart: integerPart,
+		underflow: underflow,
+		base: base,
+		delta: delta,
+		residual: residual
+		};
 endfunction
 
-function PwlValue calculateExp2(UInt#(32) differenceQ12);
-	UInt#(20) integerPart = truncate(differenceQ12 >> 12);
-	Bit#(32) differenceBits = pack(differenceQ12);
-	Bit#(12) fractionCode = truncate(differenceBits);
-	Bit#(4) interval = truncate(fractionCode >> 8);
-	Bit#(8) residual = truncate(fractionCode);
-	UInt#(19) fractionQ18 = interpolate(expBase(interval),
-						   expDelta(interval),
-						   residual,
-						   True);
-	if ( integerPart > 18 ) return 0;
-	else return fractionQ18 >> integerPart;
+function PwlLaneStage1 prepareExpOnlyLane(PwlMode mode,
+					   PwlInput inputValue,
+					   Bool valid);
+	UInt#(12) expInteger = truncate(inputValue >> 12);
+	Bit#(12) fractionCode = truncate(pack(inputValue));
+	Bit#(4) interval = fractionCode[11:8];
+	Bit#(8) residual = fractionCode[7:0];
+	Tuple2#(UInt#(19), UInt#(19)) coefficient = getExpCoefficient(interval);
+	return PwlLaneStage1{
+		valid: valid && mode == PWL_EXP2,
+		integerPart: truncate(expInteger),
+		underflow: expInteger > 18,
+		base: tpl_1(coefficient),
+		delta: tpl_2(coefficient),
+		residual: residual
+		};
 endfunction
 
-module mkPwlLane(PwlLaneIfc);
-	FIFOF#(PwlRequest) requestQ <- mkFIFOF;
-	FIFOF#(PwlResponse) responseQ <- mkFIFOF;
 
+module mkPwlArray(PwlArrayIfc);
+	FIFOF#(PwlArrayRequest) requestQ <- mkSizedFIFOF(2);
+	FIFOF#(PwlStage1) stage1Q <- mkSizedFIFOF(2);
+	FIFOF#(PwlStage2) stage2Q <- mkSizedFIFOF(2);
+	FIFOF#(PwlArrayResponse) responseQ <- mkSizedFIFOF(2);
+
+	//------------------------------------------------------------------------------------
+	// Stage 1: eight dual-mode lanes and eight exp-only lanes
+	//------------------------------------------------------------------------------------
 	rule process1;
-		PwlRequest request = requestQ.first;
+		PwlArrayRequest request = requestQ.first;
 		requestQ.deq;
-		PwlValue value = 0;
-		if ( request.mode == PWL_LOG2 ) value = calculateLog2(request.value);
-		else value = calculateExp2(request.value);
-		responseQ.enq(PwlResponse{
+		Vector#(NumPE_Profiler, PwlLaneStage1) lane = newVector;
+		for ( Integer i = 0; i < 8; i = i + 1 ) begin
+			lane[i] = prepareDualModeLane(request.mode,
+						  request.value[i],
+						  request.validMask[i] == 1);
+		end
+		for ( Integer i = 8; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+			lane[i] = prepareExpOnlyLane(request.mode,
+						 request.value[i],
+						 request.validMask[i] == 1);
+		end
+		stage1Q.enq(PwlStage1{
 			mode: request.mode,
-			value: value,
-			tag: request.tag
+			lane: lane
 			});
 	endrule
 
-	method Action put(PwlRequest request);
+	//------------------------------------------------------------------------------------
+	// Stage 2: one interpolation multiplier per arithmetic lane
+	//------------------------------------------------------------------------------------
+	rule process2;
+		PwlStage1 inputValue = stage1Q.first;
+		stage1Q.deq;
+		Vector#(NumPE_Profiler, PwlLaneStage2) lane = newVector;
+		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+			UInt#(27) product = zeroExtend(inputValue.lane[i].delta) *
+						zeroExtend(unpack(inputValue.lane[i].residual));
+			lane[i] = PwlLaneStage2{
+				valid: inputValue.lane[i].valid,
+				integerPart: inputValue.lane[i].integerPart,
+				underflow: inputValue.lane[i].underflow,
+				base: inputValue.lane[i].base,
+				product: product
+				};
+		end
+		stage2Q.enq(PwlStage2{
+			mode: inputValue.mode,
+			lane: lane
+			});
+	endrule
+
+	//------------------------------------------------------------------------------------
+	// Stage 3: emit Q12 log values or Q18 exponential weights
+	//------------------------------------------------------------------------------------
+	rule process3;
+		PwlStage2 inputValue = stage2Q.first;
+		stage2Q.deq;
+		PwlArrayResponse response = PwlArrayResponse{value: replicate(0)};
+		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+			WeightValue value = 0;
+			UInt#(20) correction = truncate((inputValue.lane[i].product + 128) >> 8);
+			if ( inputValue.lane[i].valid ) begin
+				if ( inputValue.mode == PWL_LOG2 ) begin
+					UInt#(19) fractionQ18 = inputValue.lane[i].base +
+								 truncate(correction);
+					UInt#(13) fractionQ12 = truncate((fractionQ18 + 32) >> 6);
+					UInt#(6) adjustedInteger =
+						zeroExtend(inputValue.lane[i].integerPart);
+					UInt#(12) adjustedFraction = truncate(fractionQ12);
+					if ( fractionQ12 >= 4096 ) begin
+						adjustedInteger = adjustedInteger + 1;
+						adjustedFraction = truncate(fractionQ12 - 4096);
+					end
+					UInt#(18) combinedValue =
+						(zeroExtend(adjustedInteger) << 12) |
+						 zeroExtend(adjustedFraction);
+					LogValue logValue = truncate(combinedValue);
+					value = zeroExtend(logValue);
+				end else if ( !inputValue.lane[i].underflow ) begin
+					WeightValue fractionQ18 = inputValue.lane[i].base -
+								       truncate(correction);
+					value = boundedShiftRight19(fractionQ18,
+								   inputValue.lane[i].integerPart);
+				end
+			end
+			response.value[i] = value;
+		end
+		responseQ.enq(response);
+	endrule
+
+	method Action put(PwlArrayRequest request);
 		requestQ.enq(request);
 	endmethod
 
-	method ActionValue#(PwlResponse) get;
-		PwlResponse response = responseQ.first;
+	method ActionValue#(PwlArrayResponse) get;
+		PwlArrayResponse response = responseQ.first;
 		responseQ.deq;
 		return response;
 	endmethod

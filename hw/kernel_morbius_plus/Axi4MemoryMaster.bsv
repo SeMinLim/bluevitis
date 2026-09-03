@@ -1,311 +1,430 @@
 package Axi4MemoryMaster;
 
-import FIFO::*;
 import FIFOF::*;
+import RWire::*;
+
 
 interface Axi4MemoryMasterPinsIfc#(numeric type addrSz, numeric type dataSz);
-	// write address to axi
 	(* always_ready, result="awvalid" *)
 	method Bool awvalid;
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action address_write ((* port="awready" *)  Bool awready);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action address_write((* port="awready" *) Bool awready);
 	(* always_ready, result="awaddr" *)
 	method Bit#(addrSz) awaddr;
 	(* always_ready, result="awlen" *)
 	method Bit#(8) awlen;
 
-
-	// write data to axi
 	(* always_ready, result="wvalid" *)
 	method Bool wvalid;
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action data_write ((* port="wready" *)  Bool wready);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action data_write((* port="wready" *) Bool wready);
 	(* always_ready, result="wdata" *)
 	method Bit#(dataSz) wdata;
 	(* always_ready, result="wstrb" *)
-	method Bit#(TDiv#(dataSz,8)) wstrb;
+	method Bit#(TDiv#(dataSz, 8)) wstrb;
 	(* always_ready, result="wlast" *)
 	method Bool wlast;
 
-
-	// write response from axi
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action write_resp_valid ((* port="bvalid" *)  Bool bvalid);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action write_resp_valid((* port="bvalid" *) Bool bvalid);
 	(* always_ready, result="bready" *)
 	method Bool bready;
-	
-	// write read addr to axi
+
 	(* always_ready, result="arvalid" *)
 	method Bool arvalid;
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action read_address_ready ((* port="arready" *)  Bool arready);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action read_address_ready((* port="arready" *) Bool arready);
 	(* always_ready, result="araddr" *)
 	method Bit#(addrSz) araddr;
 	(* always_ready, result="arlen" *)
 	method Bit#(8) arlen;
 
-
-	// read response from axi
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action read_data_valid ((* port="rvalid" *)  Bool rvalid);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action read_data_valid((* port="rvalid" *) Bool rvalid);
 	(* always_ready, result="rready" *)
 	method Bool rready;
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action read_data ((* port="rdata" *)  Bit#(dataSz) rdata);
-	(* always_ready, always_enabled, prefix = "" *)
-	method Action read_data_last ((* port="rlast" *)  Bool rlast);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action read_data((* port="rdata" *) Bit#(dataSz) rdata);
+	(* always_ready, always_enabled, prefix="" *)
+	method Action read_data_last((* port="rlast" *) Bool rlast);
 endinterface
 
-interface Axi4MemoryMasterIfc#(numeric type addrSz, numeric type dataSz);
-
-	interface Axi4MemoryMasterPinsIfc#(addrSz,dataSz) pins;
-  
+interface Axi4ReadMasterIfc#(numeric type addrSz, numeric type dataSz);
+	interface Axi4MemoryMasterPinsIfc#(addrSz, dataSz) pins;
 	method Action readReq(Bit#(addrSz) addr, Bit#(addrSz) size);
-	// ignoring tlast for simplicity
 	method ActionValue#(Bit#(dataSz)) read;
+	method Bool idle;
+endinterface
 
+interface Axi4WriteMasterIfc#(numeric type addrSz, numeric type dataSz);
+	interface Axi4MemoryMasterPinsIfc#(addrSz, dataSz) pins;
 	method Action writeReq(Bit#(addrSz) addr, Bit#(addrSz) size);
 	method Action write(Bit#(dataSz) data);
-  /*
-  // read user interface
-  output wire                          m_axis_tvalid,
-  input  wire                          m_axis_tready,
-  output wire [C_M_AXI_DATA_WIDTH-1:0] m_axis_tdata,
-  output wire                          m_axis_tlast
-  */
-
-  /* 
-  // write user interface
-  input  wire                            s_axis_tvalid,
-  output wire                            s_axis_tready,
-  input  wire  [C_M_AXI_DATA_WIDTH-1:0]  s_axis_tdata
-  */
+	method Bool idle;
 endinterface
 
+
 (* synthesize *)
-module mkAxi4MemoryMaster_64_512 (Axi4MemoryMasterIfc#(64,512));
-	let m_ <- mkAxi4MemoryMaster;
-	return m_;
+module mkAxi4ReadMaster_64_512(Axi4ReadMasterIfc#(64, 512));
+	let moduleValue <- mkAxi4ReadMaster;
+	return moduleValue;
 endmodule
 
-module mkAxi4MemoryMaster (Axi4MemoryMasterIfc#(addrSz,dataSz))
+module mkAxi4ReadMaster(Axi4ReadMasterIfc#(addrSz, dataSz))
 	provisos(
-		Add#(a__,8,addrSz),
-		Add#(b__,512,dataSz)
+		Add#(a__, 8, addrSz),
+		Add#(b__, 512, dataSz)
 	);
-	Reg#(Bit#(16)) writeWordInflightUp <- mkReg(0);
-	Reg#(Bit#(16)) writeWordInflightDn <- mkReg(0);
-	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(addrSz))) writeBurstReqQ <- mkFIFOF;
-	FIFOF#(Bit#(dataSz)) writeWordQ <- mkFIFOF;
+	Integer maxBurstWords = min(256, (4096 / (valueOf(dataSz) / 8)));
+	Integer maxBurstBytes = maxBurstWords * (valueOf(dataSz) / 8);
+	Integer wordByteSizeBits = valueOf(TLog#(dataSz)) - 3;
 
+	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(addrSz))) readReqQ <- mkFIFOF;
+	FIFOF#(Bit#(dataSz)) readWordQ <- mkSizedFIFOF(16);
+	Reg#(Bool) splitOnR <- mkReg(False);
+	Reg#(Bit#(addrSz)) splitAddressR <- mkReg(0);
+	Reg#(Bit#(addrSz)) splitBytesLeftR <- mkReg(0);
 
-	// max burst length = 64 for 512 bit words
-	Integer maxBurstWords = min(256, (4096/(valueOf(dataSz)/8)));
-	Integer maxBurstBytes = maxBurstWords*(valueOf(dataSz)/8);
-	Integer wordByteSzBits = valueOf(TLog#(dataSz))-3; // -3 for bytes
+	Reg#(Bool) addressValidR <- mkReg(False);
+	Reg#(Bit#(addrSz)) addressR <- mkReg(0);
+	Reg#(Bit#(8)) lengthR <- mkReg(0);
+	Reg#(UInt#(16)) acceptedBurstNumR <- mkReg(0);
+	Reg#(UInt#(16)) completedBurstNumR <- mkReg(0);
 
-	Reg#(Bit#(addrSz)) writeBurstCurAddr <- mkReg(0);
-	Reg#(Bit#(addrSz)) writeBurstBytesLeft <- mkReg(0);
-
-	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(8))) writeBurstSubQ <- mkFIFOF;
-	rule genBurst;
-		if ( writeBurstBytesLeft > 0 ) begin
-			writeBurstCurAddr <= writeBurstCurAddr + fromInteger(maxBurstBytes);
-			if ( writeBurstBytesLeft > fromInteger(maxBurstBytes) ) begin
-				writeBurstBytesLeft <= writeBurstBytesLeft - fromInteger(maxBurstBytes);
-
-				writeBurstSubQ.enq(tuple2(writeBurstCurAddr, fromInteger(maxBurstWords-1))); // because 0 is one beat
-			end else begin
-				writeBurstSubQ.enq(tuple2(writeBurstCurAddr, truncate((writeBurstBytesLeft>>wordByteSzBits)-1))); // because 0 is one beat
-				writeBurstBytesLeft <= 0;
-			end
-		end else begin
-			writeBurstReqQ.deq;
-			let r = writeBurstReqQ.first;
-			let raddr = tpl_1(r);
-			let rsz = tpl_2(r);
-			if ( rsz > fromInteger(maxBurstBytes) ) begin
-				writeBurstSubQ.enq(tuple2(raddr,fromInteger(maxBurstWords-1))); // because 0 is one beat
-				writeBurstBytesLeft <= rsz - fromInteger(maxBurstBytes); 
-				writeBurstCurAddr <= raddr + fromInteger(maxBurstBytes); 
-			end else begin
-				writeBurstSubQ.enq(tuple2(raddr,truncate((rsz>>wordByteSzBits)-1))); // because 0 is one beat
-			end
-		end
-	endrule
-
-	RWire#(Tuple2#(Bit#(addrSz),Bit#(8))) addressWriteW <- mkRWire;
-	PulseWire addressWriteReadyW <- mkPulseWire;
-	FIFO#(Bit#(8)) writeBurstCounterQ <- mkFIFO;
-	rule applyAddressWrite;
-		if ( addressWriteReadyW ) begin
-			writeBurstSubQ.deq;
-			addressWriteW.wset(writeBurstSubQ.first);
-			writeBurstCounterQ.enq(tpl_2(writeBurstSubQ.first));
-		end
-	endrule
-
-
-	RWire#(Tuple2#(Bit#(dataSz),Bool)) dataWriteW <- mkRWire;
-	PulseWire dataWriteReadyW <- mkPulseWire;
-	Reg#(Bit#(8)) curBurstLeft <- mkReg(0);
-	rule applyDataWrite;
-		if ( dataWriteReadyW ) begin
-			Bit#(8) nextBurstLeft = ?;
-			if ( curBurstLeft == 0 ) begin
-				writeBurstCounterQ.deq;
-				nextBurstLeft = writeBurstCounterQ.first ;
-			end else begin
-				nextBurstLeft = curBurstLeft - 1;
-			end
-			curBurstLeft <= nextBurstLeft;
-			writeWordQ.deq;
-			dataWriteW.wset(tuple2(writeWordQ.first, nextBurstLeft == 0 ));
-		end
-	endrule
-	
-	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(addrSz))) readBurstReqQ <- mkFIFOF;
-	Reg#(Bit#(addrSz)) readBurstCurAddr <- mkReg(0);
-	Reg#(Bit#(addrSz)) readBurstBytesLeft <- mkReg(0);
-	
-	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(8))) readBurstSubQ <- mkFIFOF;
-	rule genReadBurst;
-		if ( readBurstBytesLeft > 0 ) begin
-			readBurstCurAddr <= readBurstCurAddr + fromInteger(maxBurstBytes);
-			if ( readBurstBytesLeft > fromInteger(maxBurstBytes) ) begin
-				readBurstBytesLeft <= readBurstBytesLeft - fromInteger(maxBurstBytes);
-
-				readBurstSubQ.enq(tuple2(readBurstCurAddr, fromInteger(maxBurstWords-1))); // because 0 is one beat
-			end else begin
-				readBurstSubQ.enq(tuple2(readBurstCurAddr, truncate((readBurstBytesLeft>>wordByteSzBits)-1))); // because 0 is one beat
-				readBurstBytesLeft <= 0;
-			end
-		end else begin
-			readBurstReqQ.deq;
-			let r = readBurstReqQ.first;
-			let raddr = tpl_1(r);
-			let rsz = tpl_2(r);
-			if ( rsz > fromInteger(maxBurstBytes) ) begin
-				readBurstSubQ.enq(tuple2(raddr,fromInteger(maxBurstWords-1))); // because 0 is one beat
-				readBurstBytesLeft <= rsz - fromInteger(maxBurstBytes); 
-				readBurstCurAddr <= raddr + fromInteger(maxBurstBytes); 
-			end else begin
-				readBurstSubQ.enq(tuple2(raddr,truncate((rsz>>wordByteSzBits)-1))); // because 0 is one beat
-			end
-		end
-	endrule
-
-	PulseWire readAddressReadyW <- mkPulseWire;
-	RWire#(Tuple2#(Bit#(addrSz),Bit#(8))) readAddressW <- mkRWire;
-	rule applyReadAddress;
-		if ( readAddressReadyW ) begin
-			readBurstSubQ.deq;
-			readAddressW.wset(readBurstSubQ.first);
-		end
-	endrule
-	
+	PulseWire addressReadyW <- mkPulseWire;
 	PulseWire readDataValidW <- mkPulseWire;
-	PulseWire readDataReadyW <- mkPulseWire;
-	FIFOF#(Bit#(dataSz)) readWordQ <- mkFIFOF;
-	RWire#(Bit#(dataSz)) readDataWordW <- mkRWire;
-	rule handleReadWord;
-		if ( readWordQ.notFull ) begin
-			readDataReadyW.send;
+	PulseWire readDataLastW <- mkPulseWire;
+	RWire#(Bit#(dataSz)) readDataW <- mkRWire;
 
-			if ( readDataValidW ) begin
-			//if ( isValid(readDataWordW.wget) ) begin
-				readWordQ.enq(fromMaybe(?,readDataWordW.wget));
+	//------------------------------------------------------------------------------------
+	// Hold each AXI read address until the slave accepts it
+	//------------------------------------------------------------------------------------
+	rule manageReadAddress;
+		Bool addressConsumed = addressValidR && addressReadyW;
+		Bool addressSlotAvailable = !addressValidR || addressConsumed;
+		Bool sourceValid = splitOnR || readReqQ.notEmpty;
+
+		if ( addressConsumed ) acceptedBurstNumR <= acceptedBurstNumR + 1;
+		if ( addressSlotAvailable ) begin
+			if ( sourceValid ) begin
+				Bit#(addrSz) sourceAddress = splitAddressR;
+				Bit#(addrSz) sourceBytes = splitBytesLeftR;
+				if ( !splitOnR ) begin
+					Tuple2#(Bit#(addrSz), Bit#(addrSz)) request = readReqQ.first;
+					readReqQ.deq;
+					sourceAddress = tpl_1(request);
+					sourceBytes = tpl_2(request);
+				end
+
+				Bit#(addrSz) burstBytes = sourceBytes > fromInteger(maxBurstBytes) ?
+					fromInteger(maxBurstBytes) : sourceBytes;
+				Bit#(addrSz) burstWords = burstBytes >> wordByteSizeBits;
+				addressR <= sourceAddress;
+				lengthR <= truncate(burstWords - 1);
+				addressValidR <= True;
+				if ( sourceBytes > fromInteger(maxBurstBytes) ) begin
+					splitOnR <= True;
+					splitAddressR <= sourceAddress + fromInteger(maxBurstBytes);
+					splitBytesLeftR <= sourceBytes - fromInteger(maxBurstBytes);
+				end else begin
+					splitOnR <= False;
+					splitBytesLeftR <= 0;
+				end
+			end else if ( addressConsumed ) begin
+				addressValidR <= False;
 			end
 		end
+	endrule
+
+	//------------------------------------------------------------------------------------
+	// Capture read data only when the local FIFO can accept it
+	//------------------------------------------------------------------------------------
+	rule captureReadData ( readWordQ.notFull && readDataValidW );
+		readWordQ.enq(fromMaybe(0, readDataW.wget));
+		if ( readDataLastW ) completedBurstNumR <= completedBurstNumR + 1;
 	endrule
 
 	interface Axi4MemoryMasterPinsIfc pins;
 		method Bool awvalid;
-			return isValid(addressWriteW.wget);
+			return False;
 		endmethod
-		method Action address_write (Bool awready);
-			if ( awready ) addressWriteReadyW.send;
+		method Action address_write(Bool awready);
+			noAction;
 		endmethod
 		method Bit#(addrSz) awaddr;
-			let a = fromMaybe(?,addressWriteW.wget);
-			return tpl_1(a);
+			return 0;
 		endmethod
 		method Bit#(8) awlen;
-			let a = fromMaybe(?,addressWriteW.wget);
-			return tpl_2(a);
+			return 0;
 		endmethod
-	
+
 		method Bool wvalid;
-			return isValid(dataWriteW.wget);
+			return False;
 		endmethod
-		method Action data_write ( Bool wready);
-			if (wready) dataWriteReadyW.send;
+		method Action data_write(Bool wready);
+			noAction;
 		endmethod
 		method Bit#(dataSz) wdata;
-			let d = fromMaybe(?,dataWriteW.wget);
-			return tpl_1(d);
+			return 0;
 		endmethod
-		method Bit#(TDiv#(dataSz,8)) wstrb;
-			return (-1);
+		method Bit#(TDiv#(dataSz, 8)) wstrb;
+			return 0;
 		endmethod
 		method Bool wlast;
-			let d = fromMaybe(?,dataWriteW.wget);
-			return tpl_2(d);
+			return False;
 		endmethod
-	
-		method Action write_resp_valid (Bool bvalid);
-			if ( bvalid ) writeWordInflightDn <= writeWordInflightDn + 1;
+
+		method Action write_resp_valid(Bool bvalid);
+			noAction;
 		endmethod
 		method Bool bready;
 			return True;
 		endmethod
-	
-		// write read addr to axi
+
 		method Bool arvalid;
-			return isValid(readAddressW.wget);
+			return addressValidR;
 		endmethod
-		method Action read_address_ready ( Bool arready);
-			if ( arready ) readAddressReadyW.send;
+		method Action read_address_ready(Bool arready);
+			if ( arready ) addressReadyW.send;
 		endmethod
 		method Bit#(addrSz) araddr;
-			let a = fromMaybe(?,readAddressW.wget);
-			return tpl_1(a);
+			return addressR;
 		endmethod
 		method Bit#(8) arlen;
-			let a = fromMaybe(?,readAddressW.wget);
-			return tpl_2(a);
+			return lengthR;
 		endmethod
 
-
-		// read response from axi
-		method Action read_data_valid ( Bool rvalid);
+		method Action read_data_valid(Bool rvalid);
 			if ( rvalid ) readDataValidW.send;
 		endmethod
 		method Bool rready;
-			return readDataReadyW;
+			return readWordQ.notFull;
 		endmethod
-		method Action read_data (Bit#(dataSz) rdata);
-			readDataWordW.wset(rdata);
+		method Action read_data(Bit#(dataSz) rdata);
+			readDataW.wset(rdata);
 		endmethod
-		method Action read_data_last (Bool rlast);
+		method Action read_data_last(Bool rlast);
+			if ( rlast ) readDataLastW.send;
 		endmethod
 	endinterface
 
 	method Action readReq(Bit#(addrSz) addr, Bit#(addrSz) size);
-		readBurstReqQ.enq(tuple2(addr,size));
-	endmethod
-	method ActionValue#(Bit#(dataSz)) read;
-		readWordQ.deq;
-		return readWordQ.first;
+		readReqQ.enq(tuple2(addr, size));
 	endmethod
 
-	method Action writeReq(Bit#(addrSz) addr, Bit#(addrSz) size);
-		writeBurstReqQ.enq(tuple2(addr,size));
+	method ActionValue#(Bit#(dataSz)) read;
+		Bit#(dataSz) value = readWordQ.first;
+		readWordQ.deq;
+		return value;
 	endmethod
-	method Action write(Bit#(dataSz) data);
-		writeWordQ.enq(data);
+
+	method Bool idle;
+		return !readReqQ.notEmpty &&
+		       !splitOnR &&
+		       !addressValidR &&
+		       !readWordQ.notEmpty &&
+		       acceptedBurstNumR == completedBurstNumR;
 	endmethod
 endmodule
 
+
+(* synthesize *)
+module mkAxi4WriteMaster_64_512(Axi4WriteMasterIfc#(64, 512));
+	let moduleValue <- mkAxi4WriteMaster;
+	return moduleValue;
+endmodule
+
+module mkAxi4WriteMaster(Axi4WriteMasterIfc#(addrSz, dataSz))
+	provisos(
+		Add#(a__, 8, addrSz),
+		Add#(b__, 512, dataSz)
+	);
+	Integer maxBurstWords = min(256, (4096 / (valueOf(dataSz) / 8)));
+	Integer maxBurstBytes = maxBurstWords * (valueOf(dataSz) / 8);
+	Integer wordByteSizeBits = valueOf(TLog#(dataSz)) - 3;
+
+	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(addrSz))) writeReqQ <- mkFIFOF;
+	FIFOF#(Bit#(8)) burstLengthQ <- mkSizedFIFOF(4);
+	FIFOF#(Bit#(dataSz)) writeWordQ <- mkSizedFIFOF(16);
+	Reg#(Bool) splitOnR <- mkReg(False);
+	Reg#(Bit#(addrSz)) splitAddressR <- mkReg(0);
+	Reg#(Bit#(addrSz)) splitBytesLeftR <- mkReg(0);
+
+	Reg#(Bool) addressValidR <- mkReg(False);
+	Reg#(Bit#(addrSz)) addressR <- mkReg(0);
+	Reg#(Bit#(8)) lengthR <- mkReg(0);
+	Reg#(UInt#(16)) acceptedBurstNumR <- mkReg(0);
+	Reg#(UInt#(16)) completedBurstNumR <- mkReg(0);
+
+	Reg#(Bool) dataValidR <- mkReg(False);
+	Reg#(Bit#(dataSz)) dataR <- mkReg(0);
+	Reg#(Bool) dataLastR <- mkReg(False);
+	Reg#(Bit#(8)) remainingBeatNumR <- mkReg(0);
+
+	PulseWire addressReadyW <- mkPulseWire;
+	PulseWire dataReadyW <- mkPulseWire;
+	PulseWire writeResponseW <- mkPulseWire;
+
+	//------------------------------------------------------------------------------------
+	// Hold each AXI write address until the slave accepts it
+	//------------------------------------------------------------------------------------
+	rule manageWriteAddress;
+		Bool addressConsumed = addressValidR && addressReadyW && burstLengthQ.notFull;
+		Bool addressSlotAvailable = !addressValidR || addressConsumed;
+		Bool sourceValid = splitOnR || writeReqQ.notEmpty;
+
+		if ( addressConsumed ) begin
+			burstLengthQ.enq(lengthR);
+			acceptedBurstNumR <= acceptedBurstNumR + 1;
+		end
+		if ( addressSlotAvailable ) begin
+			if ( sourceValid ) begin
+				Bit#(addrSz) sourceAddress = splitAddressR;
+				Bit#(addrSz) sourceBytes = splitBytesLeftR;
+				if ( !splitOnR ) begin
+					Tuple2#(Bit#(addrSz), Bit#(addrSz)) request = writeReqQ.first;
+					writeReqQ.deq;
+					sourceAddress = tpl_1(request);
+					sourceBytes = tpl_2(request);
+				end
+
+				Bit#(addrSz) burstBytes = sourceBytes > fromInteger(maxBurstBytes) ?
+					fromInteger(maxBurstBytes) : sourceBytes;
+				Bit#(addrSz) burstWords = burstBytes >> wordByteSizeBits;
+				addressR <= sourceAddress;
+				lengthR <= truncate(burstWords - 1);
+				addressValidR <= True;
+				if ( sourceBytes > fromInteger(maxBurstBytes) ) begin
+					splitOnR <= True;
+					splitAddressR <= sourceAddress + fromInteger(maxBurstBytes);
+					splitBytesLeftR <= sourceBytes - fromInteger(maxBurstBytes);
+				end else begin
+					splitOnR <= False;
+					splitBytesLeftR <= 0;
+				end
+			end else if ( addressConsumed ) begin
+				addressValidR <= False;
+			end
+		end
+	endrule
+
+	//------------------------------------------------------------------------------------
+	// Maintain a stable AXI write-data beat and refill it on every handshake
+	//------------------------------------------------------------------------------------
+	rule manageWriteData;
+		Bool dataConsumed = dataValidR && dataReadyW;
+		Bool dataSlotAvailable = !dataValidR || dataConsumed;
+		Bool currentBurstAvailable = remainingBeatNumR != 0;
+		Bool newBurstAvailable = burstLengthQ.notEmpty;
+		Bool sourceValid = writeWordQ.notEmpty &&
+				   (currentBurstAvailable || newBurstAvailable);
+
+		if ( dataSlotAvailable ) begin
+			if ( sourceValid ) begin
+				Bit#(8) remainingAfterCurrent = remainingBeatNumR;
+				if ( currentBurstAvailable ) begin
+					remainingAfterCurrent = remainingBeatNumR - 1;
+				end else begin
+					remainingAfterCurrent = burstLengthQ.first;
+					burstLengthQ.deq;
+				end
+				dataR <= writeWordQ.first;
+				writeWordQ.deq;
+				dataLastR <= remainingAfterCurrent == 0;
+				remainingBeatNumR <= remainingAfterCurrent;
+				dataValidR <= True;
+			end else if ( dataConsumed ) begin
+				dataValidR <= False;
+			end
+		end
+	endrule
+
+	rule countWriteResponse ( writeResponseW );
+		completedBurstNumR <= completedBurstNumR + 1;
+	endrule
+
+	interface Axi4MemoryMasterPinsIfc pins;
+		method Bool awvalid;
+			return addressValidR && burstLengthQ.notFull;
+		endmethod
+		method Action address_write(Bool awready);
+			if ( awready ) addressReadyW.send;
+		endmethod
+		method Bit#(addrSz) awaddr;
+			return addressR;
+		endmethod
+		method Bit#(8) awlen;
+			return lengthR;
+		endmethod
+
+		method Bool wvalid;
+			return dataValidR;
+		endmethod
+		method Action data_write(Bool wready);
+			if ( wready ) dataReadyW.send;
+		endmethod
+		method Bit#(dataSz) wdata;
+			return dataR;
+		endmethod
+		method Bit#(TDiv#(dataSz, 8)) wstrb;
+			return -1;
+		endmethod
+		method Bool wlast;
+			return dataLastR;
+		endmethod
+
+		method Action write_resp_valid(Bool bvalid);
+			if ( bvalid ) writeResponseW.send;
+		endmethod
+		method Bool bready;
+			return True;
+		endmethod
+
+		method Bool arvalid;
+			return False;
+		endmethod
+		method Action read_address_ready(Bool arready);
+			noAction;
+		endmethod
+		method Bit#(addrSz) araddr;
+			return 0;
+		endmethod
+		method Bit#(8) arlen;
+			return 0;
+		endmethod
+
+		method Action read_data_valid(Bool rvalid);
+			noAction;
+		endmethod
+		method Bool rready;
+			return False;
+		endmethod
+		method Action read_data(Bit#(dataSz) rdata);
+			noAction;
+		endmethod
+		method Action read_data_last(Bool rlast);
+			noAction;
+		endmethod
+	endinterface
+
+	method Action writeReq(Bit#(addrSz) addr, Bit#(addrSz) size);
+		writeReqQ.enq(tuple2(addr, size));
+	endmethod
+
+	method Action write(Bit#(dataSz) data);
+		writeWordQ.enq(data);
+	endmethod
+
+	method Bool idle;
+		return !writeReqQ.notEmpty &&
+		       !splitOnR &&
+		       !addressValidR &&
+		       !burstLengthQ.notEmpty &&
+		       !writeWordQ.notEmpty &&
+		       !dataValidR &&
+		       remainingBeatNumR == 0 &&
+		       acceptedBurstNumR == completedBurstNumR;
+	endmethod
+endmodule
 
 endpackage

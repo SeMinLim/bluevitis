@@ -13,21 +13,18 @@ VFILES="
 	FIFOL2.v
 	FIFO1.v
 	FIFO2.v
-	RegFile.v
 	ResetInverter.v
 	SyncFIFO.v
 	ClockDiv.v
 	ResetEither.v
 	MakeReset.v
 	SyncReset0.v
-	BRAM2.v
 	RevertReg.v
 	SyncWire.v
 	"
 
 CURDIR=`pwd`
-cd $BLUESPECDIR/Verilog;
-#cp *.v $CURDIR/
+cd $BLUESPECDIR/Verilog
 
 for VFILE in $VFILES ;
 do

@@ -1,66 +1,104 @@
 package GibbsPipeline;
 
-import FIFO::*;
 import FIFOF::*;
-import RegFile::*;
 import Vector::*;
 
+import MorbiusMemory::*;
 import MorbiusTypes::*;
 import PwlLane::*;
 import RandomGenerator::*;
 
 
 typedef enum {
-	UPDATE_IDLE,
-	UPDATE_BPM,
-	UPDATE_PREV_REQUEST,
-	UPDATE_PREV_RESPONSE,
-	UPDATE_CURRENT_REQUEST,
-	UPDATE_CURRENT_RESPONSE
-} UpdateState deriving (Bits, Eq, FShow);
+	ARRAY_IDLE,
+	ARRAY_UPDATE_READ,
+	ARRAY_UPDATE_APPLY,
+	ARRAY_UPDATE_LOG_WAIT,
+	ARRAY_PROFILE,
+	ARRAY_INSERT
+} ArrayState deriving (Bits, Eq, FShow);
 
-typedef enum {
-	PHASE2_IDLE,
-	PHASE2_WAIT_WEIGHT,
-	PHASE2_COMMIT
-} Phase2State deriving (Bits, Eq, FShow);
+typedef struct {
+	Bit#(11) segmentStart;
+	Bit#(2) columnOffset;
+	Bit#(ProfilerValidWidth) validNum;
+	Bool finalColumn;
+	Bool finalSegment;
+} ProfilerMeta deriving (Bits, Eq, FShow);
 
-interface GibbsPipelineIfc;
-	method Action configure(PipelineConfig pipelineConfig,
-				Bit#(128) randomSeed,
-				UInt#(32) initialBestScore,
-				Bool active);
+typedef struct {
+	Bit#(11) segmentStart;
+	Bit#(ProfilerValidWidth) validNum;
+	Bool finalSegment;
+	Vector#(NumPipeline, UInt#(12)) exponent;
+} Phase2Meta deriving (Bits, Eq, FShow);
+
+typedef struct {
+	Bit#(11) segmentStart;
+	Bool finalSegment;
+	Vector#(NumPipeline, UInt#(12)) exponent;
+	Vector#(NumPipeline, SegmentMass) mass;
+	Vector#(NumPipeline, Bit#(ProfilerOffsetWidth)) localOffset;
+	Vector#(NumPipeline, Bit#(24)) reservoirRandom;
+} ReservoirCandidate deriving (Bits, Eq, FShow);
+
+typedef struct {
+	Bool finalSegment;
+	Vector#(NumPipeline, Bool) valid;
+	Vector#(NumPipeline, Bool) replaceFirst;
+	Vector#(NumPipeline, GlobalMass) nextMass;
+	Vector#(NumPipeline, GlobalMass) alignedSegmentMass;
+	Vector#(NumPipeline, Bit#(24)) randomFraction;
+	Vector#(NumPipeline, Bit#(11)) replacementOffset;
+} ReservoirMultiplyRequest deriving (Bits, Eq, FShow);
+
+typedef struct {
+	Bool finalSegment;
+	Vector#(NumPipeline, Bool) valid;
+	Vector#(NumPipeline, Bool) replaceFirst;
+	Vector#(NumPipeline, UInt#(60)) randomProduct;
+	Vector#(NumPipeline, UInt#(60)) segmentRange;
+	Vector#(NumPipeline, Bit#(11)) replacementOffset;
+} ReservoirMultiplyResponse deriving (Bits, Eq, FShow);
+
+typedef struct {
+	Vector#(8, SegmentMass) sum2;
+	Vector#(4, SegmentMass) sum4;
+	Vector#(2, SegmentMass) sum8;
+	SegmentMass total;
+} WeightTree deriving (Bits, Eq, FShow);
+
+interface GibbsPipelineArrayIfc;
+	method Action configure(PipelineConfig pipelineConfig);
+	method Action configurePipeline(Bit#(PipelineIndexWidth) pipelineIdx,
+					Bit#(128) randomSeed,
+					ScoreValue initialBestScore);
 	method Action loadSequenceBeat(Bit#(4) beatIdx, Bit#(512) word);
-	method Action loadBpmColumn(Bit#(8) column, MatrixColumn word);
-	method Action loadLpmColumn(Bit#(8) column, MatrixColumn word);
+	method Action loadBpmGroup(Bit#(PipelineIndexWidth) pipelineIdx,
+				  Bit#(5) address,
+				  BpmGroup value);
+	method Action loadLpmGroup(Bit#(PipelineIndexWidth) pipelineIdx,
+				  Bit#(5) address,
+				  LpmGroup value);
 	method Action startBootstrap;
-	method Action startUpdate(Bit#(11) tentativeOffset);
-	method ActionValue#(PipelineResult) result;
-	method UInt#(32) bestScore;
-	method Bool terminated;
+	method Action startUpdate(Vector#(NumPipeline, Bit#(11)) tentativeOffset);
+	method ActionValue#(Vector#(NumPipeline, PipelineResult)) result;
 	method Bool busy;
 endinterface
 
-function Bit#(2) getMatrixBank(Bit#(8) column);
-	return truncate(column);
-endfunction
-
-function Bit#(5) getMatrixAddress(Bit#(8) column);
-	return truncate(column >> 2);
-endfunction
 
 function Bit#(ProfilerValidWidth) calculateValidNum(Bit#(11) candidateNum,
-                                                     Bit#(11) startOffset);
-    Bit#(11) remaining = candidateNum - startOffset;
-    if ( remaining >= fromInteger(valueOf(NumPE_Profiler)) ) begin
-        return fromInteger(valueOf(NumPE_Profiler));
-    end else begin
-        return truncate(remaining);
-    end
+						     Bit#(11) startOffset);
+	Bit#(11) remaining = candidateNum - startOffset;
+	if ( remaining >= fromInteger(valueOf(NumPE_Profiler)) ) begin
+		return fromInteger(valueOf(NumPE_Profiler));
+	end else begin
+		return truncate(remaining);
+	end
 endfunction
 
 function LogProb maxLogProbSegment(Vector#(NumPE_Profiler, LogProb) value,
-                                   Bit#(ProfilerValidWidth) validNum);
+					   Bit#(ProfilerValidWidth) validNum);
 	Vector#(16, LogProb) masked = newVector;
 	Vector#(8, LogProb) max2 = newVector;
 	Vector#(4, LogProb) max4 = newVector;
@@ -70,70 +108,62 @@ function LogProb maxLogProbSegment(Vector#(NumPE_Profiler, LogProb) value,
 		masked[i] = fromInteger(i) < validNum ? value[i] : 0;
 	end
 	for ( Integer i = 0; i < 8; i = i + 1 ) begin
-		max2[i] = masked[2 * i] > masked[2 * i + 1] ? masked[2 * i] : masked[2 * i + 1];
+		max2[i] = masked[2 * i] > masked[2 * i + 1] ?
+			  masked[2 * i] : masked[2 * i + 1];
 	end
 	for ( Integer i = 0; i < 4; i = i + 1 ) begin
-		max4[i] = max2[2 * i] > max2[2 * i + 1] ? max2[2 * i] : max2[2 * i + 1];
+		max4[i] = max2[2 * i] > max2[2 * i + 1] ?
+			  max2[2 * i] : max2[2 * i + 1];
 	end
 	for ( Integer i = 0; i < 2; i = i + 1 ) begin
-		max8[i] = max4[2 * i] > max4[2 * i + 1] ? max4[2 * i] : max4[2 * i + 1];
+		max8[i] = max4[2 * i] > max4[2 * i + 1] ?
+			  max4[2 * i] : max4[2 * i + 1];
 	end
 	return max8[0] > max8[1] ? max8[0] : max8[1];
 endfunction
 
-function SegmentMass sumSegmentWeight(Vector#(NumPE_Profiler, PwlValue) weight);
-	Vector#(8, SegmentMass) sum2 = newVector;
-	Vector#(4, SegmentMass) sum4 = newVector;
-	Vector#(2, SegmentMass) sum8 = newVector;
-
+function WeightTree buildWeightTree(Vector#(NumPE_Profiler, WeightValue) weight);
+	WeightTree tree = WeightTree{
+		sum2: replicate(0),
+		sum4: replicate(0),
+		sum8: replicate(0),
+		total: 0
+		};
 	for ( Integer i = 0; i < 8; i = i + 1 ) begin
-		sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
+		tree.sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
 	end
 	for ( Integer i = 0; i < 4; i = i + 1 ) begin
-		sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
+		tree.sum4[i] = tree.sum2[2 * i] + tree.sum2[2 * i + 1];
 	end
 	for ( Integer i = 0; i < 2; i = i + 1 ) begin
-		sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
+		tree.sum8[i] = tree.sum4[2 * i] + tree.sum4[2 * i + 1];
 	end
-	return sum8[0] + sum8[1];
+	tree.total = tree.sum8[0] + tree.sum8[1];
+	return tree;
 endfunction
 
 function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
-                                        Vector#(NumPE_Profiler, PwlValue) weight,
-                                        SegmentMass totalMass,
-                                        Bit#(24) randomFraction,
-                                        Bit#(ProfilerValidWidth) validNum);
-	Vector#(8, SegmentMass) sum2 = newVector;
-	Vector#(4, SegmentMass) sum4 = newVector;
-	Vector#(2, SegmentMass) sum8 = newVector;
-
-	for ( Integer i = 0; i < 8; i = i + 1 ) begin
-		sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
-	end
-	for ( Integer i = 0; i < 4; i = i + 1 ) begin
-		sum4[i] = sum2[2 * i] + sum2[2 * i + 1];
-	end
-	for ( Integer i = 0; i < 2; i = i + 1 ) begin
-		sum8[i] = sum4[2 * i] + sum4[2 * i + 1];
-	end
-
-	UInt#(50) product = zeroExtend(totalMass) * zeroExtend(unpack(randomFraction));
+					Vector#(NumPE_Profiler, WeightValue) weight,
+					WeightTree tree,
+					Bit#(24) randomFraction,
+					Bit#(ProfilerValidWidth) validNum);
+	UInt#(47) product = zeroExtend(tree.total) * zeroExtend(unpack(randomFraction));
 	SegmentMass remaining = truncate(product >> 24);
 	Bit#(ProfilerValidWidth) selected = 0;
 
-	if ( remaining >= sum8[0] ) begin
+	if ( remaining >= tree.sum8[0] ) begin
 		selected = selected + 8;
-		remaining = remaining - sum8[0];
+		remaining = remaining - tree.sum8[0];
 	end
 	Bit#(2) index4 = truncate(selected >> 2);
-	if ( remaining >= sum4[index4] ) begin
+	if ( remaining >= tree.sum4[index4] ) begin
 		selected = selected + 4;
-		remaining = remaining - sum4[index4];
+		remaining = remaining - tree.sum4[index4];
 	end
 	Bit#(3) index2 = truncate(selected >> 1);
-	if ( remaining >= sum2[index2] ) begin
+	if ( remaining >= tree.sum2[index2] ) begin
 		selected = selected + 2;
-		remaining = remaining - sum2[index2];
+		remaining = remaining - tree.sum2[index2];
 	end
 	Bit#(ProfilerOffsetWidth) selectedIdx = truncate(selected);
 	if ( remaining >= zeroExtend(weight[selectedIdx]) ) selected = selected + 1;
@@ -141,295 +171,251 @@ function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
 	return truncate(selected);
 endfunction
 
-module mkGibbsPipeline(GibbsPipelineIfc);
+function GlobalMass boundedGlobalShift(GlobalMass value, UInt#(12) difference);
+	if ( difference >= 36 ) return 0;
+	else return value >> truncate(difference);
+endfunction
+
+
+module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	//------------------------------------------------------------------------------------
-	// Persistent configuration and pipeline state
+	// Shared controller and independent Gibbs state
 	//------------------------------------------------------------------------------------
 	Reg#(PipelineConfig) configR <- mkRegU;
 	Reg#(Bool) configuredR <- mkReg(False);
 	Reg#(Bool) executionStartedR <- mkReg(False);
-	Reg#(Bool) activeR <- mkReg(False);
-	Reg#(Bool) terminatedR <- mkReg(False);
-	Reg#(Bool) busyR <- mkReg(False);
-	Reg#(UInt#(32)) bestScoreR <- mkReg(0);
-	Reg#(UInt#(32)) updateNumR <- mkReg(0);
+	Reg#(ArrayState) stateR <- mkReg(ARRAY_IDLE);
 
-	Vector#(SequenceBeatNum, Reg#(Bit#(512))) sequenceWords <- replicateM(mkReg(0));
-	Vector#(MotifLengthMax, Reg#(Bit#(5))) previousTentativeMotif <- replicateM(mkReg(0));
+	Vector#(NumPipeline, Reg#(ScoreValue)) bestScoreR <- replicateM(mkReg(0));
+	Vector#(NumPipeline, Reg#(UInt#(32))) updateNumR <- replicateM(mkReg(0));
+	Vector#(NumPipeline, Reg#(Bool)) terminatedR <- replicateM(mkReg(False));
+	Vector#(NumPipeline, Reg#(RandomState)) randomStateR <- replicateM(mkRegU);
+	Vector#(NumPipeline, Reg#(Bit#(11))) tentativeOffsetR <- replicateM(mkReg(0));
+	Vector#(NumPipeline, Reg#(Bit#(11))) selectedOffsetR <- replicateM(mkReg(0));
 
-	Vector#(NumPE_LPM, RegFile#(Bit#(5), MatrixColumn)) bpmBanks <- replicateM(mkRegFileFull);
-	Vector#(NumPE_LPM, RegFile#(Bit#(5), MatrixColumn)) lpmBanks <- replicateM(mkRegFileFull);
-
-	Vector#(NumPE_Profiler, PwlLaneIfc) pwlLanes <- replicateM(mkPwlLane);
-	RandomGeneratorIfc randomGenerator <- mkRandomGenerator;
-	FIFOF#(PipelineResult) resultQ <- mkFIFOF;
+	Vector#(NumPipeline, BpmMemoryIfc) bpmMemory <- replicateM(mkBpmMemory);
+	Vector#(NumPipeline, LpmMemoryIfc) lpmMemory <- replicateM(mkLpmMemory);
+	Vector#(NumPipeline, SequenceMemoryIfc) sequenceMemory <- replicateM(mkSequenceMemory);
+	Vector#(NumPipeline, MotifMemoryIfc) previousMotifMemory <-
+		replicateM(mkMotifMemory);
+	Vector#(NumPipeline, PwlArrayIfc) pwlArray <- replicateM(mkPwlArray);
+	FIFOF#(Vector#(NumPipeline, PipelineResult)) resultQ <- mkFIFOF;
 
 	//------------------------------------------------------------------------------------
 	// Selective BPM and LPM update
 	//------------------------------------------------------------------------------------
-	Reg#(UpdateState) updateStateR <- mkReg(UPDATE_IDLE);
-	Reg#(Bit#(8)) updateBatchStartR <- mkReg(0);
-	Reg#(Bit#(11)) tentativeOffsetR <- mkReg(0);
-	Vector#(NumPE_LPM, Reg#(Bool)) changedValidR <- replicateM(mkReg(False));
-	Vector#(NumPE_LPM, Reg#(Bit#(5))) changedPreviousSymbolR <- replicateM(mkReg(0));
-	Vector#(NumPE_LPM, Reg#(Bit#(5))) changedCurrentSymbolR <- replicateM(mkReg(0));
-	Vector#(NumPE_LPM, Reg#(BpmCount)) changedPreviousCountR <- replicateM(mkReg(1));
-	Vector#(NumPE_LPM, Reg#(BpmCount)) changedCurrentCountR <- replicateM(mkReg(1));
+	Reg#(Bit#(5)) updateGroupAddressR <- mkReg(0);
+	Vector#(NumPipeline, Vector#(NumPE_LPM, Reg#(Bool))) changedValidR <-
+		replicateM(replicateM(mkReg(False)));
+	Vector#(NumPipeline, Vector#(NumPE_LPM, Reg#(Symbol))) changedPreviousSymbolR <-
+		replicateM(replicateM(mkReg(0)));
+	Vector#(NumPipeline, Vector#(NumPE_LPM, Reg#(Symbol))) changedCurrentSymbolR <-
+		replicateM(replicateM(mkReg(0)));
 
 	//------------------------------------------------------------------------------------
 	// Profiler Phase 1
 	//------------------------------------------------------------------------------------
-	Reg#(Bool) phase1On <- mkReg(False);
-	Reg#(Bool) phase1Done <- mkReg(False);
+	Reg#(Bool) phase1RequestOnR <- mkReg(False);
 	Reg#(Bit#(11)) candidateNumR <- mkReg(0);
-	Reg#(Bit#(8)) expectedSegmentNumR <- mkReg(0);
 	Reg#(Bit#(11)) phase1SegmentStartR <- mkReg(0);
 	Reg#(Bit#(8)) phase1ColumnR <- mkReg(0);
-	Vector#(NumPE_Profiler, Reg#(LogProb)) phase1AccumR <- replicateM(mkReg(0));
-	FIFOF#(LogProbSegment) logProbSegmentQ <- mkSizedFIFOF(8);
+	Vector#(NumPipeline, Vector#(NumPE_Profiler, Reg#(LogProb))) phase1AccumR <-
+		replicateM(replicateM(mkReg(0)));
+	FIFOF#(ProfilerMeta) phase1MetaQ <- mkSizedFIFOF(2);
 
 	//------------------------------------------------------------------------------------
-	// Profiler Phase 2
+	// Profiler Phase 2 and streaming weighted reservoir
 	//------------------------------------------------------------------------------------
-	Reg#(Phase2State) phase2StateR <- mkReg(PHASE2_IDLE);
-	Reg#(LogProbSegment) phase2SegmentR <- mkRegU;
-	Reg#(UInt#(16)) phase2ExponentR <- mkReg(0);
-	Reg#(SegmentSummary) phase2SummaryR <- mkRegU;
-	RegFile#(Bit#(7), SegmentSummary) segmentSummaryMem <- mkRegFileFull;
-	Reg#(Bit#(8)) segmentSummaryNumR <- mkReg(0);
-	Reg#(Bool) globalMassValidR <- mkReg(False);
-	Reg#(UInt#(16)) globalExponentR <- mkReg(0);
-	Reg#(GlobalMass) globalMassR <- mkReg(0);
+	FIFOF#(Phase2Meta) phase2MetaQ <- mkSizedFIFOF(2);
+	FIFOF#(ReservoirCandidate) reservoirCandidateQ <- mkSizedFIFOF(2);
+	FIFOF#(ReservoirMultiplyRequest) reservoirMultiplyRequestQ <- mkSizedFIFOF(2);
+	FIFOF#(ReservoirMultiplyResponse) reservoirMultiplyResponseQ <- mkSizedFIFOF(2);
+	Vector#(NumPipeline, Reg#(Bool)) globalMassValidR <- replicateM(mkReg(False));
+	Vector#(NumPipeline, Reg#(UInt#(12))) globalExponentR <- replicateM(mkReg(0));
+	Vector#(NumPipeline, Reg#(GlobalMass)) globalMassR <- replicateM(mkReg(0));
 
 	//------------------------------------------------------------------------------------
-	// Segment selection, motif insertion, and score calculation
+	// Fused tentative-motif insertion and score calculation
 	//------------------------------------------------------------------------------------
-	Reg#(Bool) selectorOn <- mkReg(False);
-	Reg#(Bit#(8)) selectorIdxR <- mkReg(0);
-	Reg#(GlobalMass) selectorThresholdR <- mkReg(0);
-	Reg#(GlobalMass) selectorCumulativeR <- mkReg(0);
-	Reg#(Bit#(11)) selectedOffsetR <- mkReg(0);
+	Reg#(Bool) insertRequestOnR <- mkReg(False);
+	Reg#(Bit#(5)) insertGroupAddressR <- mkReg(0);
+	FIFOF#(Bit#(5)) insertGroupAddressQ <- mkSizedFIFOF(2);
+	Vector#(NumPipeline, Reg#(ScoreValue)) scoreAccumR <- replicateM(mkReg(0));
 
-	Reg#(Bool) insertOn <- mkReg(False);
-	Reg#(Bit#(8)) insertColumnR <- mkReg(0);
-	Reg#(Bool) scoreOn <- mkReg(False);
-	Reg#(Bit#(8)) scoreColumnR <- mkReg(0);
-	Reg#(UInt#(32)) scoreAccumR <- mkReg(0);
-
-	function MatrixColumn readBpmColumn(Bit#(8) column);
-		Bit#(5) address = getMatrixAddress(column);
-		case ( getMatrixBank(column) )
-			0: return bpmBanks[0].sub(address);
-			1: return bpmBanks[1].sub(address);
-			2: return bpmBanks[2].sub(address);
-			default: return bpmBanks[3].sub(address);
-		endcase
+	function Bool allSequenceLoadIdle();
+		Bool allIdle = True;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			allIdle = allIdle && sequenceMemory[p].loadIdle;
+		end
+		return allIdle;
 	endfunction
 
-	function MatrixColumn readLpmColumn(Bit#(8) column);
-		Bit#(5) address = getMatrixAddress(column);
-		case ( getMatrixBank(column) )
-			0: return lpmBanks[0].sub(address);
-			1: return lpmBanks[1].sub(address);
-			2: return lpmBanks[2].sub(address);
-			default: return lpmBanks[3].sub(address);
-		endcase
+	function Bool allPipelineTerminated();
+		Bool allDone = True;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			allDone = allDone && terminatedR[p];
+		end
+		return allDone;
 	endfunction
 
-	function Action writeBpmColumn(Bit#(8) column, MatrixColumn word);
+	function Action beginProfiler();
 		action
-			Bit#(5) address = getMatrixAddress(column);
-			case ( getMatrixBank(column) )
-				0: bpmBanks[0].upd(address, word);
-				1: bpmBanks[1].upd(address, word);
-				2: bpmBanks[2].upd(address, word);
-				default: bpmBanks[3].upd(address, word);
-			endcase
-		endaction
-	endfunction
-
-	function Action writeLpmColumn(Bit#(8) column, MatrixColumn word);
-		action
-			Bit#(5) address = getMatrixAddress(column);
-			case ( getMatrixBank(column) )
-				0: lpmBanks[0].upd(address, word);
-				1: lpmBanks[1].upd(address, word);
-				2: lpmBanks[2].upd(address, word);
-				default: lpmBanks[3].upd(address, word);
-			endcase
-		endaction
-	endfunction
-
-	function Action beginProfiler;
-		action
-			Bit#(11) candidateNum = configR.sequenceLength - zeroExtend(configR.motifLength) + 1;
-			Bit#(12) segmentNumerator = zeroExtend(candidateNum) + fromInteger(valueOf(NumPE_Profiler) - 1);
-			Bit#(8) segmentNum = truncate(segmentNumerator >> valueOf(ProfilerOffsetWidth));
+			Bit#(11) candidateNum = configR.sequenceLength -
+					       zeroExtend(configR.motifLength) + 1;
 			candidateNumR <= candidateNum;
-			expectedSegmentNumR <= segmentNum;
 			phase1SegmentStartR <= 0;
 			phase1ColumnR <= 0;
-			phase1Done <= False;
-			phase1On <= True;
-			for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-				phase1AccumR[i] <= 0;
+			phase1RequestOnR <= True;
+			stateR <= ARRAY_PROFILE;
+			for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+				for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+					phase1AccumR[p][i] <= 0;
+				end
+				globalMassValidR[p] <= False;
+				globalExponentR[p] <= 0;
+				globalMassR[p] <= 0;
+				scoreAccumR[p] <= 0;
 			end
-			phase2StateR <= PHASE2_IDLE;
-			segmentSummaryNumR <= 0;
-			globalMassValidR <= False;
-			globalExponentR <= 0;
-			globalMassR <= 0;
-			selectorOn <= False;
-			insertOn <= False;
-			scoreOn <= False;
 		endaction
 	endfunction
 
+	function Vector#(NumPipeline, PipelineResult) makeCurrentResult(
+					Vector#(NumPipeline, Bit#(11)) offset);
+		Vector#(NumPipeline, PipelineResult) value = newVector;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			value[p] = PipelineResult{
+				newOffset: offset[p],
+				bestScore: bestScoreR[p],
+				updateNum: updateNumR[p],
+				bestUpdate: False,
+				terminated: terminatedR[p]
+				};
+		end
+		return value;
+	endfunction
+
 	//------------------------------------------------------------------------------------
-	// Remove the current tentative motif and generate column masking bits
+	// Remove the incoming tentative motif and update only changed LPM entries
 	//------------------------------------------------------------------------------------
-	rule updateBpm1 ( executionStartedR && busyR && updateStateR == UPDATE_BPM );
-		Vector#(SequenceBeatNum, Bit#(512)) sequenceValue = readVReg(sequenceWords);
-		Bit#(5) bankAddress = getMatrixAddress(updateBatchStartR);
-
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			Bit#(8) column = updateBatchStartR + fromInteger(i);
-			Bool changed = False;
-			Bit#(5) previousSymbol = 0;
-			Bit#(5) currentSymbol = 0;
-			BpmCount previousCount = 1;
-			BpmCount currentCount = 1;
-			if ( column < configR.motifLength ) begin
-				MatrixColumn bpmWord = bpmBanks[i].sub(bankAddress);
-				Bit#(11) sequencePosition = tentativeOffsetR + zeroExtend(column);
-				currentSymbol = getSequenceSymbol(sequenceValue, sequencePosition);
-				previousSymbol = previousTentativeMotif[column];
-				BpmCount currentCountBefore = getMatrixEntry(bpmWord, currentSymbol);
-				currentCount = currentCountBefore - 1;
-				MatrixColumn updatedWord = setMatrixEntry(bpmWord,
-								      currentSymbol,
-								      currentCount);
-				bpmBanks[i].upd(bankAddress, updatedWord);
-				changed = previousSymbol != currentSymbol;
-				previousCount = getMatrixEntry(updatedWord, previousSymbol);
-			end
-			changedValidR[i] <= changed;
-			changedPreviousSymbolR[i] <= previousSymbol;
-			changedCurrentSymbolR[i] <= currentSymbol;
-			changedPreviousCountR[i] <= previousCount;
-			changedCurrentCountR[i] <= currentCount;
+	rule updateRead1 ( stateR == ARRAY_UPDATE_READ );
+		Bit#(8) groupStart = zeroExtend(updateGroupAddressR) << 2;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			bpmMemory[p].readGroup(updateGroupAddressR);
+			lpmMemory[p].readGroup(updateGroupAddressR);
+			previousMotifMemory[p].readGroup(updateGroupAddressR);
+			sequenceMemory[p].readWindow(tentativeOffsetR[p] + zeroExtend(groupStart));
 		end
-		updateStateR <= UPDATE_PREV_REQUEST;
+		stateR <= ARRAY_UPDATE_APPLY;
 	endrule
 
-	rule updateLpmPreviousRequest1 ( executionStartedR && busyR && updateStateR == UPDATE_PREV_REQUEST );
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			UInt#(32) count = 1;
-			if ( changedValidR[i] ) count = zeroExtend(changedPreviousCountR[i]);
-			pwlLanes[i].put(PwlRequest{
+	rule updateApply1 ( stateR == ARRAY_UPDATE_APPLY );
+		Bit#(8) groupStart = zeroExtend(updateGroupAddressR) << 2;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			BpmGroup updatedBpm = bpmMemory[p].readResponse;
+			let sequenceResponse <- sequenceMemory[p].getWindow;
+			MotifSymbolGroup previousValue = previousMotifMemory[p].readResponse;
+			PwlArrayRequest logRequest = PwlArrayRequest{
 				mode: PWL_LOG2,
-				value: count,
-				tag: fromInteger(i)
-				});
+				value: replicate(0),
+				validMask: 0
+				};
+
+			for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
+				Bit#(8) column = groupStart + fromInteger(i);
+				Bool validColumn = column < configR.motifLength;
+				Symbol currentSymbol = sequenceResponse[i];
+				Symbol previousSymbol = previousValue[i];
+				Bool changed = validColumn && !terminatedR[p] &&
+					       previousSymbol != currentSymbol;
+				changedValidR[p][i] <= changed;
+				changedPreviousSymbolR[p][i] <= previousSymbol;
+				changedCurrentSymbolR[p][i] <= currentSymbol;
+
+				if ( validColumn && !terminatedR[p] ) begin
+					BpmCount currentCountBefore = getBpmEntry(updatedBpm[i],
+										 currentSymbol);
+					BpmCount currentCount = currentCountBefore - 1;
+					updatedBpm[i] = setBpmEntry(updatedBpm[i],
+								    currentSymbol,
+								    currentCount);
+					if ( changed ) begin
+						BpmCount previousCount = getBpmEntry(updatedBpm[i],
+										 previousSymbol);
+						logRequest.value[2 * i] = zeroExtend(previousCount);
+						logRequest.value[2 * i + 1] = zeroExtend(currentCount);
+						logRequest.validMask[2 * i] = 1;
+						logRequest.validMask[2 * i + 1] = 1;
+					end
+				end
+			end
+
+			if ( !terminatedR[p] ) begin
+				bpmMemory[p].writeGroup(updateGroupAddressR, updatedBpm);
+			end
+			pwlArray[p].put(logRequest);
 		end
-		updateStateR <= UPDATE_PREV_RESPONSE;
+		stateR <= ARRAY_UPDATE_LOG_WAIT;
 	endrule
 
-	rule updateLpmPreviousResponse1 ( executionStartedR && busyR && updateStateR == UPDATE_PREV_RESPONSE );
-		Vector#(NumPE_LPM, PwlResponse) response = newVector;
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			let value <- pwlLanes[i].get;
-			response[i] = value;
-		end
-		Bit#(5) bankAddress = getMatrixAddress(updateBatchStartR);
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			if ( changedValidR[i] ) begin
-				MatrixColumn lpmWord = lpmBanks[i].sub(bankAddress);
-				MatrixColumn updatedWord = setMatrixEntry(lpmWord,
-								      changedPreviousSymbolR[i],
-								      truncate(response[i].value));
-				lpmBanks[i].upd(bankAddress, updatedWord);
+	rule updateLogWait1 ( stateR == ARRAY_UPDATE_LOG_WAIT );
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			let logResponse <- pwlArray[p].get;
+			LpmGroup updatedLpm = lpmMemory[p].readResponse;
+			Bool writeRequired = False;
+			for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
+				if ( changedValidR[p][i] ) begin
+					updatedLpm[i] = setLpmEntry(updatedLpm[i],
+								 changedPreviousSymbolR[p][i],
+								 truncate(logResponse.value[2 * i]));
+					updatedLpm[i] = setLpmEntry(updatedLpm[i],
+								 changedCurrentSymbolR[p][i],
+								 truncate(logResponse.value[2 * i + 1]));
+					writeRequired = True;
+				end
+			end
+			if ( writeRequired ) begin
+				lpmMemory[p].writeGroup(updateGroupAddressR, updatedLpm);
 			end
 		end
-		updateStateR <= UPDATE_CURRENT_REQUEST;
-	endrule
 
-	rule updateLpmCurrentRequest1 ( executionStartedR && busyR && updateStateR == UPDATE_CURRENT_REQUEST );
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			UInt#(32) count = 1;
-			if ( changedValidR[i] ) count = zeroExtend(changedCurrentCountR[i]);
-			pwlLanes[i].put(PwlRequest{
-				mode: PWL_LOG2,
-				value: count,
-				tag: fromInteger(i)
-				});
-		end
-		updateStateR <= UPDATE_CURRENT_RESPONSE;
-	endrule
-
-	rule updateLpmCurrentResponse1 ( executionStartedR && busyR && updateStateR == UPDATE_CURRENT_RESPONSE );
-		Vector#(NumPE_LPM, PwlResponse) response = newVector;
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			let value <- pwlLanes[i].get;
-			response[i] = value;
-		end
-		Bit#(5) bankAddress = getMatrixAddress(updateBatchStartR);
-		for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-			if ( changedValidR[i] ) begin
-				MatrixColumn lpmWord = lpmBanks[i].sub(bankAddress);
-				MatrixColumn updatedWord = setMatrixEntry(lpmWord,
-								      changedCurrentSymbolR[i],
-								      truncate(response[i].value));
-				lpmBanks[i].upd(bankAddress, updatedWord);
-			end
-		end
-
-		Bit#(9) nextBatch = zeroExtend(updateBatchStartR) + fromInteger(valueOf(NumPE_LPM));
-		if ( nextBatch >= zeroExtend(configR.motifLength) ) begin
-			updateStateR <= UPDATE_IDLE;
+		Bit#(6) nextGroup = zeroExtend(updateGroupAddressR) + 1;
+		Bit#(9) nextColumn = zeroExtend(nextGroup) << 2;
+		if ( nextColumn >= zeroExtend(configR.motifLength) ) begin
 			beginProfiler;
 		end else begin
-			updateBatchStartR <= truncate(nextBatch);
-			updateStateR <= UPDATE_BPM;
+			updateGroupAddressR <= truncate(nextGroup);
+			stateR <= ARRAY_UPDATE_READ;
 		end
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// Profiler Phase 1: generate NumPE_Profiler LogProb values per segment
+	// Profiler Phase 1: one LPM group and one 16-symbol window per cycle
 	//------------------------------------------------------------------------------------
-	rule profilerPhase1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && phase1On );
-		Vector#(SequenceBeatNum, Bit#(512)) sequenceValue = readVReg(sequenceWords);
-		MatrixColumn lpmWord = readLpmColumn(phase1ColumnR);
-		Vector#(NumPE_Profiler, LogProb) completedLogProb = newVector;
+	rule profilerPhase1Request1 ( stateR == ARRAY_PROFILE && phase1RequestOnR );
 		Bit#(ProfilerValidWidth) validNum = calculateValidNum(candidateNumR,
-								phase1SegmentStartR);
+									phase1SegmentStartR);
 		Bool finalColumn = (phase1ColumnR + 1) >= configR.motifLength;
+		Bit#(12) nextStart = zeroExtend(phase1SegmentStartR) +
+					 fromInteger(valueOf(NumPE_Profiler));
+		Bool finalSegment = nextStart >= zeroExtend(candidateNumR);
+		Bit#(5) groupAddress = truncate(phase1ColumnR >> 2);
 
-		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			LogProb nextValue = phase1AccumR[i];
-			if ( fromInteger(i) < validNum ) begin
-				Bit#(11) sequencePosition = phase1SegmentStartR +
-							  fromInteger(i) +
-							  zeroExtend(phase1ColumnR);
-				Bit#(5) symbol = getSequenceSymbol(sequenceValue, sequencePosition);
-				UInt#(18) lpmEntry = getMatrixEntry(lpmWord, symbol);
-				nextValue = phase1AccumR[i] + zeroExtend(lpmEntry);
-			end
-			completedLogProb[i] = nextValue;
-			if ( finalColumn ) phase1AccumR[i] <= 0;
-			else phase1AccumR[i] <= nextValue;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			lpmMemory[p].readGroup(groupAddress);
+			sequenceMemory[p].readWindow(phase1SegmentStartR +
+							 zeroExtend(phase1ColumnR));
 		end
+		phase1MetaQ.enq(ProfilerMeta{
+			segmentStart: phase1SegmentStartR,
+			columnOffset: truncate(phase1ColumnR),
+			validNum: validNum,
+			finalColumn: finalColumn,
+			finalSegment: finalSegment
+			});
 
 		if ( finalColumn ) begin
-			logProbSegmentQ.enq(LogProbSegment{
-				logProb: completedLogProb,
-				startOffset: phase1SegmentStartR,
-				validNum: validNum
-				});
-			Bit#(12) nextStart = zeroExtend(phase1SegmentStartR) + fromInteger(valueOf(NumPE_Profiler));
-			if ( nextStart >= zeroExtend(candidateNumR) ) begin
-				phase1On <= False;
-				phase1Done <= True;
+			if ( finalSegment ) begin
+				phase1RequestOnR <= False;
 			end else begin
 				phase1SegmentStartR <= truncate(nextStart);
 				phase1ColumnR <= 0;
@@ -439,240 +425,397 @@ module mkGibbsPipeline(GibbsPipelineIfc);
 		end
 	endrule
 
-	//------------------------------------------------------------------------------------
-	// Profiler Phase 2: WeightProducer and SegmentSampler
-	//------------------------------------------------------------------------------------
-	rule profilerPhase2Issue1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && phase2StateR == PHASE2_IDLE );
-		LogProbSegment segment = logProbSegmentQ.first;
-		logProbSegmentQ.deq;
-		LogProb maximum = maxLogProbSegment(segment.logProb, segment.validNum);
-		UInt#(16) exponent = truncate((maximum + 4095) >> 12);
-		UInt#(32) exponentQ12 = zeroExtend(exponent) << 12;
-		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			UInt#(32) difference = 32'h7fffffff;
-			if ( fromInteger(i) < segment.validNum ) difference = exponentQ12 - segment.logProb[i];
-			pwlLanes[i].put(PwlRequest{
-				mode: PWL_EXP2,
-				value: difference,
-				tag: fromInteger(i)
-				});
-		end
-		phase2SegmentR <= segment;
-		phase2ExponentR <= exponent;
-		phase2StateR <= PHASE2_WAIT_WEIGHT;
-	endrule
-
-	rule profilerPhase2Weight1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && phase2StateR == PHASE2_WAIT_WEIGHT );
-		Vector#(NumPE_Profiler, PwlValue) weight = newVector;
-		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			let response <- pwlLanes[i].get;
-			weight[i] = response.value;
-		end
-		let randomWord <- randomGenerator.get;
-		SegmentMass segmentMass = sumSegmentWeight(weight);
-		Bit#(ProfilerOffsetWidth) localOffset = selectLocalCandidate(weight,
-							    segmentMass,
-							    randomWord[31:8],
-							    phase2SegmentR.validNum);
-		phase2SummaryR <= SegmentSummary{
-			startOffset: phase2SegmentR.startOffset,
-			exponent: phase2ExponentR,
-			mass: segmentMass,
-			localOffset: localOffset,
-			validNum: phase2SegmentR.validNum
+	rule profilerPhase1Response1 ( stateR == ARRAY_PROFILE );
+		ProfilerMeta meta = phase1MetaQ.first;
+		phase1MetaQ.deq;
+		Phase2Meta phase2Meta = Phase2Meta{
+			segmentStart: meta.segmentStart,
+			validNum: meta.validNum,
+			finalSegment: meta.finalSegment,
+			exponent: replicate(0)
 			};
-		phase2StateR <= PHASE2_COMMIT;
-	endrule
 
-	rule profilerPhase2Commit1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && phase2StateR == PHASE2_COMMIT );
-		Bit#(7) summaryAddress = truncate(segmentSummaryNumR);
-		segmentSummaryMem.upd(summaryAddress, phase2SummaryR);
-		GlobalMass segmentMassQ24 = zeroExtend(phase2SummaryR.mass) << 6;
-		if ( !globalMassValidR ) begin
-			globalMassValidR <= True;
-			globalExponentR <= phase2SummaryR.exponent;
-			globalMassR <= segmentMassQ24;
-		end else if ( phase2SummaryR.exponent <= globalExponentR ) begin
-			UInt#(16) difference = globalExponentR - phase2SummaryR.exponent;
-			globalMassR <= globalMassR + (segmentMassQ24 >> difference);
-		end else begin
-			UInt#(16) difference = phase2SummaryR.exponent - globalExponentR;
-			globalMassR <= (globalMassR >> difference) + segmentMassQ24;
-			globalExponentR <= phase2SummaryR.exponent;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			LpmGroup lpmGroup = lpmMemory[p].readResponse;
+			let sequenceValue <- sequenceMemory[p].getWindow;
+			LpmEntries lpmValue = lpmGroup[meta.columnOffset];
+			Vector#(NumPE_Profiler, LogProb) completedLogProb = newVector;
+			for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+				LogProb nextValue = phase1AccumR[p][i];
+				if ( fromInteger(i) < meta.validNum && !terminatedR[p] ) begin
+					LogValue lpmEntry = getLpmEntry(lpmValue, sequenceValue[i]);
+					nextValue = phase1AccumR[p][i] + zeroExtend(lpmEntry);
+				end
+				completedLogProb[i] = nextValue;
+				if ( meta.finalColumn ) phase1AccumR[p][i] <= 0;
+				else phase1AccumR[p][i] <= nextValue;
+			end
+
+			if ( meta.finalColumn ) begin
+				LogProb maximum = maxLogProbSegment(completedLogProb, meta.validNum);
+				UInt#(12) exponent = truncate((maximum + 4095) >> 12);
+				LogProb exponentQ12 = zeroExtend(exponent) << 12;
+				PwlArrayRequest expRequest = PwlArrayRequest{
+					mode: PWL_EXP2,
+					value: replicate(0),
+					validMask: 0
+					};
+				for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+					if ( fromInteger(i) < meta.validNum && !terminatedR[p] ) begin
+						expRequest.value[i] = exponentQ12 - completedLogProb[i];
+						expRequest.validMask[i] = 1;
+					end
+				end
+				pwlArray[p].put(expRequest);
+				phase2Meta.exponent[p] = exponent;
+			end
 		end
-		segmentSummaryNumR <= segmentSummaryNumR + 1;
-		phase2StateR <= PHASE2_IDLE;
+
+		if ( meta.finalColumn ) phase2MetaQ.enq(phase2Meta);
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// SegmentSelector: scan one summary per cycle with early exit
+	// Profiler Phase 2: local PPS sampling and streaming segment reservoir
 	//------------------------------------------------------------------------------------
-	rule startSegmentSelector ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && phase1Done &&
-					      phase2StateR == PHASE2_IDLE &&
-					      segmentSummaryNumR == expectedSegmentNumR &&
-					      !phase1On && !selectorOn && !insertOn && !scoreOn );
-		let randomWord <- randomGenerator.get;
-		UInt#(24) randomFraction = unpack(randomWord[31:8]);
-		UInt#(72) product = zeroExtend(globalMassR) * zeroExtend(randomFraction);
-		selectorThresholdR <= truncate(product >> 24);
-		selectorCumulativeR <= 0;
-		selectorIdxR <= 0;
-		selectorOn <= True;
-		phase1Done <= False;
+	rule profilerPhase2Weight1 ( stateR == ARRAY_PROFILE );
+		Phase2Meta meta = phase2MetaQ.first;
+		phase2MetaQ.deq;
+		ReservoirCandidate candidate = ReservoirCandidate{
+			segmentStart: meta.segmentStart,
+			finalSegment: meta.finalSegment,
+			exponent: meta.exponent,
+			mass: replicate(0),
+			localOffset: replicate(0),
+			reservoirRandom: replicate(0)
+			};
+
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			let response <- pwlArray[p].get;
+			WeightTree tree = buildWeightTree(response.value);
+			if ( !terminatedR[p] ) begin
+				Tuple2#(Bit#(32), RandomState) localResult =
+					nextRandom(randomStateR[p]);
+				Tuple2#(Bit#(32), RandomState) reservoirResult =
+					nextRandom(tpl_2(localResult));
+				Bit#(32) localRandomWord = tpl_1(localResult);
+				Bit#(32) reservoirRandomWord = tpl_1(reservoirResult);
+				candidate.localOffset[p] = selectLocalCandidate(
+					response.value,
+					tree,
+					localRandomWord[31:8],
+					meta.validNum
+				);
+				candidate.reservoirRandom[p] = reservoirRandomWord[31:8];
+				randomStateR[p] <= tpl_2(reservoirResult);
+			end
+			candidate.mass[p] = tree.total;
+		end
+		reservoirCandidateQ.enq(candidate);
 	endrule
 
-	rule selectSegment1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && selectorOn && !insertOn && !scoreOn );
-		SegmentSummary summary = segmentSummaryMem.sub(truncate(selectorIdxR));
-		GlobalMass alignedMass = zeroExtend(summary.mass) << 6;
-		UInt#(16) exponentDifference = globalExponentR - summary.exponent;
-		alignedMass = alignedMass >> exponentDifference;
-		GlobalMass nextCumulative = selectorCumulativeR + alignedMass;
-		Bool finalSummary = (selectorIdxR + 1) >= expectedSegmentNumR;
-		if ( nextCumulative > selectorThresholdR || finalSummary ) begin
-			selectedOffsetR <= summary.startOffset + zeroExtend(summary.localOffset);
-			selectorOn <= False;
-			insertColumnR <= 0;
-			insertOn <= True;
-		end else begin
-			selectorCumulativeR <= nextCumulative;
-			selectorIdxR <= selectorIdxR + 1;
+	rule profilerPhase2Commit1 ( stateR == ARRAY_PROFILE );
+		ReservoirCandidate candidate = reservoirCandidateQ.first;
+		reservoirCandidateQ.deq;
+		ReservoirMultiplyRequest multiplyRequest = ReservoirMultiplyRequest{
+			finalSegment: candidate.finalSegment,
+			valid: replicate(False),
+			replaceFirst: replicate(False),
+			nextMass: replicate(0),
+			alignedSegmentMass: replicate(0),
+			randomFraction: candidate.reservoirRandom,
+			replacementOffset: replicate(0)
+			};
+
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			if ( !terminatedR[p] ) begin
+				GlobalMass segmentMass = zeroExtend(candidate.mass[p]) << 6;
+				GlobalMass oldMass = 0;
+				GlobalMass alignedSegmentMass = segmentMass;
+				UInt#(12) nextExponent = candidate.exponent[p];
+				if ( globalMassValidR[p] ) begin
+					if ( candidate.exponent[p] <= globalExponentR[p] ) begin
+						UInt#(12) difference = globalExponentR[p] -
+								       candidate.exponent[p];
+						oldMass = globalMassR[p];
+						alignedSegmentMass = boundedGlobalShift(segmentMass,
+										     difference);
+						nextExponent = globalExponentR[p];
+					end else begin
+						UInt#(12) difference = candidate.exponent[p] -
+								       globalExponentR[p];
+						oldMass = boundedGlobalShift(globalMassR[p], difference);
+					end
+				end
+				GlobalMass nextMass = oldMass + alignedSegmentMass;
+				multiplyRequest.valid[p] = True;
+				multiplyRequest.replaceFirst[p] = !globalMassValidR[p];
+				multiplyRequest.nextMass[p] = nextMass;
+				multiplyRequest.alignedSegmentMass[p] = alignedSegmentMass;
+				multiplyRequest.replacementOffset[p] = candidate.segmentStart +
+									      zeroExtend(candidate.localOffset[p]);
+				globalMassValidR[p] <= True;
+				globalExponentR[p] <= nextExponent;
+				globalMassR[p] <= nextMass;
+			end
+		end
+		reservoirMultiplyRequestQ.enq(multiplyRequest);
+	endrule
+
+	rule profilerReservoirMultiply1 ( stateR == ARRAY_PROFILE );
+		ReservoirMultiplyRequest request = reservoirMultiplyRequestQ.first;
+		reservoirMultiplyRequestQ.deq;
+		ReservoirMultiplyResponse response = ReservoirMultiplyResponse{
+			finalSegment: request.finalSegment,
+			valid: request.valid,
+			replaceFirst: request.replaceFirst,
+			randomProduct: replicate(0),
+			segmentRange: replicate(0),
+			replacementOffset: request.replacementOffset
+			};
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			if ( request.valid[p] ) begin
+				response.randomProduct[p] = zeroExtend(request.nextMass[p]) *
+							    zeroExtend(unpack(request.randomFraction[p]));
+				response.segmentRange[p] = zeroExtend(request.alignedSegmentMass[p]) << 24;
+			end
+		end
+		reservoirMultiplyResponseQ.enq(response);
+	endrule
+
+	rule profilerReservoirSelect1 ( stateR == ARRAY_PROFILE );
+		ReservoirMultiplyResponse response = reservoirMultiplyResponseQ.first;
+		reservoirMultiplyResponseQ.deq;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			Bool replace = response.replaceFirst[p] ||
+				       (response.valid[p] &&
+					response.segmentRange[p] != 0 &&
+					response.randomProduct[p] < response.segmentRange[p]);
+			if ( replace ) selectedOffsetR[p] <= response.replacementOffset[p];
+		end
+
+		if ( response.finalSegment ) begin
+			insertGroupAddressR <= 0;
+			insertRequestOnR <= True;
+			stateR <= ARRAY_INSERT;
+			for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+				scoreAccumR[p] <= 0;
+			end
 		end
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// TentativeMotifExtractor and BPM insertion
+	// Insert four columns per cycle and calculate the complete-state score in one pass
 	//------------------------------------------------------------------------------------
-	rule insertNewMotif1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && insertOn && !selectorOn && !scoreOn );
-		Vector#(SequenceBeatNum, Bit#(512)) sequenceValue = readVReg(sequenceWords);
-		Bit#(5) symbol = getSequenceSymbol(sequenceValue,
-						selectedOffsetR + zeroExtend(insertColumnR));
-		MatrixColumn bpmWord = readBpmColumn(insertColumnR);
-		BpmCount count = getMatrixEntry(bpmWord, symbol);
-		MatrixColumn updatedWord = setMatrixEntry(bpmWord, symbol, count + 1);
-		writeBpmColumn(insertColumnR, updatedWord);
-		previousTentativeMotif[insertColumnR] <= symbol;
-		if ( (insertColumnR + 1) >= configR.motifLength ) begin
-			insertOn <= False;
-			scoreColumnR <= 0;
-			scoreAccumR <= 0;
-			scoreOn <= True;
+	rule insertRequest1 ( stateR == ARRAY_INSERT && insertRequestOnR );
+		Bit#(8) groupStart = zeroExtend(insertGroupAddressR) << 2;
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			bpmMemory[p].readGroup(insertGroupAddressR);
+			sequenceMemory[p].readWindow(selectedOffsetR[p] + zeroExtend(groupStart));
+		end
+		insertGroupAddressQ.enq(insertGroupAddressR);
+		Bit#(6) nextGroup = zeroExtend(insertGroupAddressR) + 1;
+		Bit#(9) nextColumn = zeroExtend(nextGroup) << 2;
+		if ( nextColumn >= zeroExtend(configR.motifLength) ) begin
+			insertRequestOnR <= False;
 		end else begin
-			insertColumnR <= insertColumnR + 1;
+			insertGroupAddressR <= truncate(nextGroup);
 		end
 	endrule
 
-	//------------------------------------------------------------------------------------
-	// ScoreComparator: calculate and compare the complete-state score
-	//------------------------------------------------------------------------------------
-	rule calculateScore1 ( executionStartedR && busyR && updateStateR == UPDATE_IDLE && scoreOn && !selectorOn && !insertOn );
-		MatrixColumn bpmWord = readBpmColumn(scoreColumnR);
-		UInt#(32) columnMaximum = maxBpmEntry(bpmWord, configR.alphabetSize);
-		UInt#(32) nextScore = scoreAccumR + columnMaximum;
-		if ( (scoreColumnR + 1) >= configR.motifLength ) begin
-			UInt#(32) nextUpdateNum = updateNumR + 1;
-			Bool bestUpdate = nextScore > bestScoreR;
-			UInt#(32) nextBestScore = bestUpdate ? nextScore : bestScoreR;
-			Bool nextTerminated = nextBestScore >= configR.scoreThreshold ||
-						 nextUpdateNum >= configR.maxUpdates;
-			bestScoreR <= nextBestScore;
-			updateNumR <= nextUpdateNum;
-			terminatedR <= nextTerminated;
-			busyR <= False;
-			scoreOn <= False;
-			resultQ.enq(PipelineResult{
-				newOffset: selectedOffsetR,
-				bestScore: nextBestScore,
-				updateNum: nextUpdateNum,
-				bestUpdate: bestUpdate,
-				terminated: nextTerminated,
-				active: activeR
-				});
-		end else begin
-			scoreAccumR <= nextScore;
-			scoreColumnR <= scoreColumnR + 1;
+	rule insertResponse1 ( stateR == ARRAY_INSERT );
+		Bit#(5) groupAddress = insertGroupAddressQ.first;
+		insertGroupAddressQ.deq;
+		Bit#(8) groupStart = zeroExtend(groupAddress) << 2;
+		Bit#(9) groupEnd = zeroExtend(groupStart) + 4;
+		Bool finalGroup = groupEnd >= zeroExtend(configR.motifLength);
+		PipelineResult emptyResult = PipelineResult{
+			newOffset: 0,
+			bestScore: 0,
+			updateNum: 0,
+			bestUpdate: False,
+			terminated: False
+			};
+		Vector#(NumPipeline, PipelineResult) resultValue = replicate(emptyResult);
+
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			BpmGroup updatedBpm = bpmMemory[p].readResponse;
+			let sequenceResponse <- sequenceMemory[p].getWindow;
+			MotifSymbolGroup newMotif = replicate(0);
+			ScoreValue nextScore = scoreAccumR[p];
+
+			if ( !terminatedR[p] ) begin
+				for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
+					Bit#(8) column = groupStart + fromInteger(i);
+					if ( column < configR.motifLength ) begin
+						Symbol symbol = sequenceResponse[i];
+						BpmCount count = getBpmEntry(updatedBpm[i], symbol);
+						updatedBpm[i] = setBpmEntry(updatedBpm[i],
+									    symbol,
+									    count + 1);
+						newMotif[i] = symbol;
+						nextScore = nextScore + maxBpmEntry(updatedBpm[i],
+										     configR.alphabetSize);
+					end
+				end
+				bpmMemory[p].writeGroup(groupAddress, updatedBpm);
+				previousMotifMemory[p].writeGroup(groupAddress, newMotif);
+			end
+
+			if ( finalGroup ) begin
+				if ( !terminatedR[p] ) begin
+					UInt#(32) nextUpdateNum = updateNumR[p] + 1;
+					Bool bestUpdate = nextScore > bestScoreR[p];
+					ScoreValue nextBestScore = bestUpdate ? nextScore : bestScoreR[p];
+					Bool nextTerminated = nextBestScore >= configR.scoreThreshold ||
+							      nextUpdateNum >= configR.maxUpdates;
+					bestScoreR[p] <= nextBestScore;
+					updateNumR[p] <= nextUpdateNum;
+					terminatedR[p] <= nextTerminated;
+					resultValue[p] = PipelineResult{
+						newOffset: selectedOffsetR[p],
+						bestScore: nextBestScore,
+						updateNum: nextUpdateNum,
+						bestUpdate: bestUpdate,
+						terminated: nextTerminated
+						};
+				end else begin
+					resultValue[p] = PipelineResult{
+						newOffset: selectedOffsetR[p],
+						bestScore: bestScoreR[p],
+						updateNum: updateNumR[p],
+						bestUpdate: False,
+						terminated: True
+						};
+				end
+			end else if ( !terminatedR[p] ) begin
+				scoreAccumR[p] <= nextScore;
+			end
+		end
+
+		if ( finalGroup ) begin
+			stateR <= ARRAY_IDLE;
+			resultQ.enq(resultValue);
 		end
 	endrule
 
 	//------------------------------------------------------------------------------------
 	// Interface
 	//------------------------------------------------------------------------------------
-	method Action configure(PipelineConfig pipelineConfig,
-				Bit#(128) randomSeed,
-				UInt#(32) initialBestScore,
-				Bool active) if ( !configuredR && !executionStartedR && !busyR );
+	method Action configure(PipelineConfig pipelineConfig)
+		if ( !configuredR && !executionStartedR && stateR == ARRAY_IDLE );
 		configR <= pipelineConfig;
-		activeR <= active;
-		bestScoreR <= initialBestScore;
-		updateNumR <= 0;
-		terminatedR <= !active || initialBestScore >= pipelineConfig.scoreThreshold;
 		configuredR <= True;
-		randomGenerator.seed(randomSeed);
 	endmethod
 
-	method Action loadSequenceBeat(Bit#(4) beatIdx, Bit#(512) word) if ( !busyR );
-		sequenceWords[beatIdx] <= word;
+	method Action configurePipeline(Bit#(PipelineIndexWidth) pipelineIdx,
+					Bit#(128) randomSeed,
+					ScoreValue initialBestScore)
+		if ( configuredR && !executionStartedR && stateR == ARRAY_IDLE );
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			if ( fromInteger(p) == pipelineIdx ) begin
+				randomStateR[p] <= initializeRandomState(randomSeed);
+				bestScoreR[p] <= initialBestScore;
+				updateNumR[p] <= 0;
+				terminatedR[p] <= initialBestScore >= configR.scoreThreshold;
+				tentativeOffsetR[p] <= 0;
+				selectedOffsetR[p] <= 0;
+			end
+		end
 	endmethod
 
-	method Action loadBpmColumn(Bit#(8) column, MatrixColumn word) if ( !executionStartedR && !busyR );
-		writeBpmColumn(column, word);
+	method Action loadSequenceBeat(Bit#(4) beatIdx, Bit#(512) word)
+		if ( stateR == ARRAY_IDLE );
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			sequenceMemory[p].loadBeat(beatIdx, word);
+		end
 	endmethod
 
-	method Action loadLpmColumn(Bit#(8) column, MatrixColumn word) if ( !executionStartedR && !busyR );
-		writeLpmColumn(column, word);
+	method Action loadBpmGroup(Bit#(PipelineIndexWidth) pipelineIdx,
+				  Bit#(5) address,
+				  BpmGroup value)
+		if ( !executionStartedR && stateR == ARRAY_IDLE );
+		case ( pipelineIdx )
+			0: bpmMemory[0].loadGroup(address, value);
+			1: bpmMemory[1].loadGroup(address, value);
+			2: bpmMemory[2].loadGroup(address, value);
+			3: bpmMemory[3].loadGroup(address, value);
+			4: bpmMemory[4].loadGroup(address, value);
+			5: bpmMemory[5].loadGroup(address, value);
+			6: bpmMemory[6].loadGroup(address, value);
+			7: bpmMemory[7].loadGroup(address, value);
+			8: bpmMemory[8].loadGroup(address, value);
+			9: bpmMemory[9].loadGroup(address, value);
+			10: bpmMemory[10].loadGroup(address, value);
+			11: bpmMemory[11].loadGroup(address, value);
+			12: bpmMemory[12].loadGroup(address, value);
+			13: bpmMemory[13].loadGroup(address, value);
+			14: bpmMemory[14].loadGroup(address, value);
+			default: bpmMemory[15].loadGroup(address, value);
+		endcase
 	endmethod
 
-	method Action startBootstrap if ( configuredR && !executionStartedR && !busyR );
+	method Action loadLpmGroup(Bit#(PipelineIndexWidth) pipelineIdx,
+				  Bit#(5) address,
+				  LpmGroup value)
+		if ( !executionStartedR && stateR == ARRAY_IDLE );
+		case ( pipelineIdx )
+			0: lpmMemory[0].loadGroup(address, value);
+			1: lpmMemory[1].loadGroup(address, value);
+			2: lpmMemory[2].loadGroup(address, value);
+			3: lpmMemory[3].loadGroup(address, value);
+			4: lpmMemory[4].loadGroup(address, value);
+			5: lpmMemory[5].loadGroup(address, value);
+			6: lpmMemory[6].loadGroup(address, value);
+			7: lpmMemory[7].loadGroup(address, value);
+			8: lpmMemory[8].loadGroup(address, value);
+			9: lpmMemory[9].loadGroup(address, value);
+			10: lpmMemory[10].loadGroup(address, value);
+			11: lpmMemory[11].loadGroup(address, value);
+			12: lpmMemory[12].loadGroup(address, value);
+			13: lpmMemory[13].loadGroup(address, value);
+			14: lpmMemory[14].loadGroup(address, value);
+			default: lpmMemory[15].loadGroup(address, value);
+		endcase
+	endmethod
+
+	method Action startBootstrap
+		if ( configuredR && !executionStartedR && stateR == ARRAY_IDLE &&
+		     allSequenceLoadIdle );
 		executionStartedR <= True;
-		if ( terminatedR ) begin
-			resultQ.enq(PipelineResult{
-				newOffset: 0,
-				bestScore: bestScoreR,
-				updateNum: updateNumR,
-				bestUpdate: False,
-				terminated: True,
-				active: activeR
-				});
+		Vector#(NumPipeline, Bit#(11)) offset = replicate(0);
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			selectedOffsetR[p] <= 0;
+		end
+		if ( allPipelineTerminated ) begin
+			resultQ.enq(makeCurrentResult(offset));
 		end else begin
-			randomGenerator.start;
-			busyR <= True;
 			beginProfiler;
 		end
 	endmethod
 
-	method Action startUpdate(Bit#(11) tentativeOffset) if ( configuredR && executionStartedR && !busyR );
-		if ( terminatedR ) begin
-			resultQ.enq(PipelineResult{
-				newOffset: tentativeOffset,
-				bestScore: bestScoreR,
-				updateNum: updateNumR,
-				bestUpdate: False,
-				terminated: True,
-				active: activeR
-				});
+	method Action startUpdate(Vector#(NumPipeline, Bit#(11)) tentativeOffset)
+		if ( configuredR && executionStartedR && stateR == ARRAY_IDLE &&
+		     allSequenceLoadIdle );
+		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
+			tentativeOffsetR[p] <= tentativeOffset[p];
+			selectedOffsetR[p] <= tentativeOffset[p];
+		end
+		if ( allPipelineTerminated ) begin
+			resultQ.enq(makeCurrentResult(tentativeOffset));
 		end else begin
-			busyR <= True;
-			tentativeOffsetR <= tentativeOffset;
-			updateBatchStartR <= 0;
-			updateStateR <= UPDATE_BPM;
+			updateGroupAddressR <= 0;
+			stateR <= ARRAY_UPDATE_READ;
 		end
 	endmethod
 
-	method ActionValue#(PipelineResult) result;
-		PipelineResult value = resultQ.first;
+	method ActionValue#(Vector#(NumPipeline, PipelineResult)) result;
+		Vector#(NumPipeline, PipelineResult) value = resultQ.first;
 		resultQ.deq;
 		return value;
 	endmethod
 
-	method UInt#(32) bestScore;
-		return bestScoreR;
-	endmethod
-
-	method Bool terminated;
-		return terminatedR;
-	endmethod
-
 	method Bool busy;
-		return busyR;
+		return stateR != ARRAY_IDLE;
 	endmethod
 endmodule
 

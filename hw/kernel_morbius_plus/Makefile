@@ -35,6 +35,6 @@ help:
 
 sim:
 	mkdir -p obj/sim
-	bsc -bdir obj/sim -simdir obj/sim -info-dir obj/sim -u -sim -g mkTestGibbsPipeline TestGibbsPipeline.bsv
-	bsc -bdir obj/sim -simdir obj/sim -info-dir obj/sim -sim -e mkTestGibbsPipeline -o obj/sim/test_gibbs
+	bsc $(BSC_RTSFLAGS) $(BSCFLAGS) -D MORBIUS_BLUESIM -bdir obj/sim -simdir obj/sim -info-dir obj/sim -u -sim -g mkTestGibbsPipeline TestGibbsPipeline.bsv
+	bsc $(BSC_RTSFLAGS) $(BSCFLAGS) -D MORBIUS_BLUESIM -bdir obj/sim -simdir obj/sim -info-dir obj/sim -sim -e mkTestGibbsPipeline -o obj/sim/test_gibbs
 	./obj/sim/test_gibbs
