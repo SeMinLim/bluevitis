@@ -1,0 +1,47 @@
+name: Squash Morbius Plus resource optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'hw/kernel_morbius_plus/GibbsLane.bsv'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: squash-morbius-resource-optimization
+  cancel-in-progress: false
+
+jobs:
+  squash:
+    if: github.event.head_commit.message == 'Optimize Morbius+ U50 resource architecture'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Verify optimized source and squash staging history
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'package GibbsLane;' hw/kernel_morbius_plus/GibbsLane.bsv
+          grep -Fq 'package PwlArray;' hw/kernel_morbius_plus/PwlArray.bsv
+          grep -Fq 'package SequenceMemory;' hw/kernel_morbius_plus/SequenceMemory.bsv
+          grep -Fq 'typedef 16 NumPipeline;' hw/kernel_morbius_plus/MorbiusTypes.bsv
+          grep -Fq 'typedef 16 NumPE_Profiler;' hw/kernel_morbius_plus/MorbiusTypes.bsv
+          grep -Fq 'typedef 4 NumPE_LPM;' hw/kernel_morbius_plus/MorbiusTypes.bsv
+          ! test -e hw/kernel_morbius_plus/PwlLane.bsv
+
+          git config user.name 'SeMinLim'
+          git config user.email 'seminl1@kookmin.ac.kr'
+          git reset --soft 76a8abd5dd8e1d8a500c5f7bc0399567e1c6772f
+          rm -rf .github
+          git add -A
+          git commit -m 'Optimize Morbius+ U50 resource architecture'
+          git push --force origin HEAD:main
