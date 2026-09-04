@@ -1,6 +1,7 @@
 package Axi4MemoryMaster;
 
 import FIFOF::*;
+import SpecialFIFOs::*;
 import RWire::*;
 
 
@@ -244,7 +245,7 @@ module mkAxi4WriteMaster(Axi4WriteMasterIfc#(addrSz, dataSz))
 	Integer wordByteSizeBits = valueOf(TLog#(dataSz)) - 3;
 
 	FIFOF#(Tuple2#(Bit#(addrSz), Bit#(addrSz))) writeReqQ <- mkFIFOF;
-	FIFOF#(Bit#(8)) burstLengthQ <- mkSizedFIFOF(4);
+	FIFOF#(Bit#(8)) burstLengthQ <- mkPipelineFIFOF;
 	FIFOF#(Bit#(dataSz)) writeWordQ <- mkSizedFIFOF(16);
 	Reg#(Bool) splitOnR <- mkReg(False);
 	Reg#(Bit#(addrSz)) splitAddressR <- mkReg(0);

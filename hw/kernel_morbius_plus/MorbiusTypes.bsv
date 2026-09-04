@@ -121,7 +121,8 @@ function MatrixColumn packLpmColumn(LpmEntries entry);
 	MatrixColumn result = 0;
 	for ( Integer i = 0; i < valueOf(AlphabetMax); i = i + 1 ) begin
 		Integer low = i * 18;
-		result[low + 17:low] = zeroExtend(pack(entry[i]));
+		Bit#(18) encodedValue = zeroExtend(pack(entry[i]));
+		result[low + 17:low] = encodedValue;
 	end
 	return result;
 endfunction
@@ -271,7 +272,7 @@ function SequenceRow packSequenceRow(Bit#(512) word, Integer rowIdx);
 	SequenceRow result = newVector;
 	for ( Integer i = 0; i < valueOf(SequenceRowSymbolNum); i = i + 1 ) begin
 		Integer low = (rowIdx * valueOf(SequenceRowSymbolNum) + i) * 8;
-		result[i] = truncate(word[low + 7:low]);
+		result[i] = word[low + 4:low];
 	end
 	return result;
 endfunction
