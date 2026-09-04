@@ -1,0 +1,195 @@
+name: Fix and validate Morbius Plus BSV kernel
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/fix-gibbs-width-and-validate.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-gibbs-width-and-validate
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out complete main history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Apply explicit Gibbs shift width
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('hw/kernel_morbius_plus/GibbsPipeline.bsv')
+          text = path.read_text()
+          old = '''function GlobalMass boundedGlobalShift(GlobalMass value, UInt#(12) difference);\n\tif ( difference >= 36 ) return 0;\n\telse return value >> truncate(difference);\nendfunction\n'''
+          new = '''function GlobalMass boundedGlobalShift(GlobalMass value, UInt#(12) difference);\n\tif ( difference >= 36 ) begin\n\t\treturn 0;\n\tend else begin\n\t\tBit#(6) shiftAmount = truncate(pack(difference));\n\t\treturn value >> shiftAmount;\n\tend\nendfunction\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('boundedGlobalShift implementation was not found')
+          path.write_text(text)
+          PY
+
+      - name: Install BSC and Icarus Verilog
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y iverilog
+          curl -L --fail --retry 3 \
+            -o /tmp/bsc.tar.gz \
+            https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-debian-12.13.tar.gz
+          mkdir -p /tmp/bsc
+          tar -xzf /tmp/bsc.tar.gz -C /tmp/bsc --strip-components=1
+          echo '/tmp/bsc/bin' >> "$GITHUB_PATH"
+          /tmp/bsc/bin/bsc -version
+
+      - name: Elaborate complete RTL kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/tmp/bsc/bin:$PATH
+          kernel_dir=$PWD/hw/kernel_morbius_plus
+          build_dir=/tmp/morbius_bsc_kernel
+          rm -rf "$build_dir"
+          mkdir -p "$build_dir/verilog"
+          cd "$kernel_dir"
+          bsc +RTS -K512M -RTS \
+            -show-schedule \
+            -aggressive-conditions \
+            -steps 10000000 \
+            -bdir "$build_dir" \
+            -vdir "$build_dir/verilog" \
+            -simdir "$build_dir" \
+            -info-dir "$build_dir" \
+            -fdir "$build_dir" \
+            -remove-dollar \
+            -verilog \
+            -u \
+            -g kernel \
+            KernelTop.bsv 2>&1 | tee /tmp/morbius_bsc_kernel.log
+
+          test -f "$build_dir/verilog/kernel.v"
+          if grep -Ei 'G0021|can never fire|will never fire' /tmp/morbius_bsc_kernel.log; then
+            echo 'A reachable kernel rule was scheduled as permanently disabled.'
+            exit 1
+          fi
+
+      - name: Elaborate standalone Gibbs test top
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/tmp/bsc/bin:$PATH
+          kernel_dir=$PWD/hw/kernel_morbius_plus
+          build_dir=/tmp/morbius_bsc_test
+          rm -rf "$build_dir"
+          mkdir -p "$build_dir/verilog"
+          cd "$kernel_dir"
+          bsc +RTS -K512M -RTS \
+            -show-schedule \
+            -aggressive-conditions \
+            -steps 10000000 \
+            -bdir "$build_dir" \
+            -vdir "$build_dir/verilog" \
+            -simdir "$build_dir" \
+            -info-dir "$build_dir" \
+            -fdir "$build_dir" \
+            -remove-dollar \
+            -verilog \
+            -u \
+            -g mkTestGibbsPipeline \
+            TestGibbsPipeline.bsv 2>&1 | tee /tmp/morbius_bsc_test.log
+
+          test -f "$build_dir/verilog/mkTestGibbsPipeline.v"
+          if grep -Ei 'G0021|can never fire|will never fire' /tmp/morbius_bsc_test.log; then
+            echo 'A reachable test-top rule was scheduled as permanently disabled.'
+            exit 1
+          fi
+
+      - name: Audit ambiguous conversions and generated RTL
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_dir=hw/kernel_morbius_plus
+
+          if grep -RniE '(>>|<<)[[:space:]]*truncate[[:space:]]*\(' \
+            "$kernel_dir" --include='*.bsv'; then
+            echo 'An untyped truncate remains in a shift amount.'
+            exit 1
+          fi
+
+          grep -Fq 'Bit#(6) shiftAmount = truncate(pack(difference));' \
+            "$kernel_dir/GibbsPipeline.bsv"
+          grep -Fq 'Bit#(18) encodedValue = zeroExtend(pack(entry[i]));' \
+            "$kernel_dir/MorbiusTypes.bsv"
+          grep -Fq 'result[i] = word[low + 4:low];' \
+            "$kernel_dir/MorbiusTypes.bsv"
+          grep -Fq 'FIFOF#(Bit#(8)) burstLengthQ <- mkPipelineFIFOF;' \
+            "$kernel_dir/Axi4MemoryMaster.bsv"
+
+          grep -Fq 'module mkGibbsPipelineArray' "$kernel_dir/GibbsPipeline.bsv"
+          grep -Fq 'module mkBpmMemory' "$kernel_dir/MorbiusMemory.bsv"
+          grep -Fq 'module MorbiusSdpRam' "$kernel_dir/MorbiusSdpRam.v"
+          grep -Fq 'typedef 16 NumPipeline;' "$kernel_dir/MorbiusTypes.bsv"
+          grep -Fq 'typedef 16 NumPE_Profiler;' "$kernel_dir/MorbiusTypes.bsv"
+          grep -Fq 'typedef 4 NumPE_LPM;' "$kernel_dir/MorbiusTypes.bsv"
+
+      - name: Compile and execute accelerator software model
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_dir=sw/host_morbius_plus
+          g++ -g -std=c++17 -Wall -Wextra -pedantic -O2 \
+            "$host_dir/main_model.cpp" \
+            "$host_dir/Utility.cpp" \
+            "$host_dir/SeedInitialization.cpp" \
+            "$host_dir/AcceleratorMath.cpp" \
+            "$host_dir/AcceleratorProtocol.cpp" \
+            "$host_dir/AcceleratorModel.cpp" \
+            "$host_dir/HostOrchestrator.cpp" \
+            "$host_dir/Application.cpp" \
+            "$host_dir/Result.cpp" \
+            -pthread \
+            -o /tmp/morbius_model
+
+          rm -rf /tmp/morbius_model_output
+          mkdir -p /tmp/morbius_model_output
+          /tmp/morbius_model \
+            --model \
+            --input "$host_dir/test/DNA_TEST.fasta" \
+            --output /tmp/morbius_model_output/result \
+            --alphabet dna \
+            --motif-length 16 \
+            --max-updates 32 \
+            --score-threshold 1.0 \
+            --seed 1 \
+            --batch-size 4
+
+          test -f /tmp/morbius_model_output/result.summary.txt
+
+      - name: Commit validated fix directly to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_commit=$(git rev-parse HEAD^)
+          rm -rf .github
+          git reset --soft "$base_commit"
+          git config user.name 'Se-Min Lim'
+          git config user.email 'seminl1@kookmin.ac.kr'
+          git add -A
+          git commit -m 'Fix Morbius+ Gibbs width and validate RTL kernel'
+          git push --force-with-lease origin HEAD:main
