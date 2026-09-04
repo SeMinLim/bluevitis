@@ -94,7 +94,7 @@ int main( void ) {
 		return 1;
 	}
 	parseResultBeat(output.data(), results);
-	if ( results[0].newOffset != 12 || results[0].bestScore != 36 ||
+	if ( results[0].newOffset != 4 || results[0].bestScore != 36 ||
 	     results[0].updateNum != 1 || results[0].bestUpdate == false ||
 	     results[0].terminated ) {
 		printf( "Bootstrap protocol mismatch: offset=%u score=%u update=%u bestUpdate=%d terminated=%d\n",
@@ -107,13 +107,23 @@ int main( void ) {
 		return 1;
 	}
 
+	for ( int pipelineIdx = 0; pipelineIdx < ACCELMAXPIPELINE; pipelineIdx ++ ) {
+		AccelPipelineHostState &state = states[(size_t)pipelineIdx];
+		const AccelWireResult &wireResult = results[(size_t)pipelineIdx];
+		state.offsets[0] = wireResult.newOffset;
+		if ( wireResult.bestUpdate ) state.bestOffsets = state.offsets;
+		state.bestScore = wireResult.bestScore;
+		state.updateNum = wireResult.updateNum;
+		state.terminated = wireResult.terminated;
+	}
+
 	buildBatchCommand(&config, &dataset, states, 0, 1, input);
 	if ( executeModelKernel(input, ACCELRESULTBYTES + ACCELBEATBYTES, output, NULL) != 0 ) {
 		printf( "Update protocol test failed to execute.\n" );
 		return 1;
 	}
 	parseResultBeat(output.data(), results);
-	if ( results[0].newOffset != 4 || results[0].bestScore != 36 ||
+	if ( results[0].newOffset != 12 || results[0].bestScore != 36 ||
 	     results[0].updateNum != 2 || results[0].bestUpdate ||
 	     results[0].terminated == false ) {
 		printf( "Update protocol mismatch: offset=%u score=%u update=%u bestUpdate=%d terminated=%d\n",

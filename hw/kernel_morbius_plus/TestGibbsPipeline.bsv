@@ -11,8 +11,11 @@ typedef enum {
 	TEST_CONFIGURE_PIPELINE,
 	TEST_LOAD_MATRIX,
 	TEST_LOAD_SEQUENCE,
-	TEST_START,
-	TEST_WAIT,
+	TEST_START_BOOTSTRAP,
+	TEST_WAIT_BOOTSTRAP,
+	TEST_LOAD_UPDATE_SEQUENCE,
+	TEST_START_UPDATE,
+	TEST_WAIT_UPDATE,
 	TEST_DONE
 } TestState deriving (Bits, Eq, FShow);
 
@@ -68,29 +71,65 @@ module mkTestGibbsPipeline(Empty);
 		Bit#(512) word = 0;
 		for ( Integer i = 0; i < 16; i = i + 1 ) begin
 			Integer low = i * 8;
-			word[low + 7:low] = fromInteger(i % 4);
+			Bit#(8) symbolByte = fromInteger(i % 4);
+			word[low + 7:low] = symbolByte;
 		end
 		pipelineArray.loadSequenceBeat(0, word);
-		stateR <= TEST_START;
+		stateR <= TEST_START_BOOTSTRAP;
 	endrule
 
-	rule start1 ( stateR == TEST_START );
+	rule startBootstrap1 ( stateR == TEST_START_BOOTSTRAP );
 		pipelineArray.startBootstrap;
-		stateR <= TEST_WAIT;
+		stateR <= TEST_WAIT_BOOTSTRAP;
 	endrule
 
-	rule wait1 ( stateR == TEST_WAIT );
+	rule waitBootstrap1 ( stateR == TEST_WAIT_BOOTSTRAP );
 		let result <- pipelineArray.result;
 		Bool valid = True;
 		for ( Integer i = 0; i < valueOf(NumPipeline); i = i + 1 ) begin
 			valid = valid && result[i].newOffset <= 12;
 			valid = valid && result[i].updateNum == 1;
 			valid = valid && result[i].bestScore == 8;
+			valid = valid && !result[i].terminated;
+		end
+		if ( !valid ) begin
+			$display("Morbius+ Gibbs bootstrap test failed.");
+			$finish(1);
+		end
+		stateR <= TEST_LOAD_UPDATE_SEQUENCE;
+	endrule
+
+	rule loadUpdateSequence1 ( stateR == TEST_LOAD_UPDATE_SEQUENCE );
+		Bit#(512) word = 0;
+		for ( Integer i = 0; i < 16; i = i + 1 ) begin
+			Integer low = i * 8;
+			Bit#(8) symbolByte = 8'd3;
+			word[low + 7:low] = symbolByte;
+		end
+		pipelineArray.loadSequenceBeat(0, word);
+		stateR <= TEST_START_UPDATE;
+	endrule
+
+	rule startUpdate1 ( stateR == TEST_START_UPDATE );
+		Vector#(NumPipeline, Bit#(11)) tentativeOffset = replicate(0);
+		pipelineArray.startUpdate(tentativeOffset);
+		stateR <= TEST_WAIT_UPDATE;
+	endrule
+
+	rule waitUpdate1 ( stateR == TEST_WAIT_UPDATE );
+		let result <- pipelineArray.result;
+		Bool valid = True;
+		for ( Integer i = 0; i < valueOf(NumPipeline); i = i + 1 ) begin
+			valid = valid && result[i].newOffset <= 12;
+			valid = valid && result[i].updateNum == 2;
+			valid = valid && result[i].bestScore >= 8;
+			valid = valid && result[i].terminated;
 		end
 		if ( valid ) begin
-			$display("Morbius+ Gibbs array test passed in %0d cycles.", cycleCntR);
+			$display("Morbius+ Gibbs bootstrap and update test passed in %0d cycles.",
+				 cycleCntR);
 		end else begin
-			$display("Morbius+ Gibbs array test failed.");
+			$display("Morbius+ Gibbs update test failed.");
 			$finish(1);
 		end
 		stateR <= TEST_DONE;

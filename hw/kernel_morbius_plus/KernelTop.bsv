@@ -2,6 +2,7 @@ import Axi4LiteControllerXrt::*;
 import Axi4MemoryMaster::*;
 
 import Clocks::*;
+import FIFOF::*;
 
 import KernelMain::*;
 
@@ -30,27 +31,26 @@ module kernel(KernelTopIfc);
 	KernelMainIfc kernelMain <- mkKernelMain;
 
 	Reg#(Bool) startedR <- mkReg(False);
-	Reg#(Bool) startPendingR <- mkReg(False);
-	Reg#(Bit#(32)) startParamR <- mkReg(0);
 	Reg#(Bool) lastApStartR <- mkReg(False);
+	FIFOF#(Bit#(32)) startQ <- mkFIFOF;
 	Reg#(Bool) kernelDonePendingR <- mkReg(False);
 
-	rule assertControl ( !startedR && !startPendingR );
+	rule assertControl ( !startedR && !startQ.notEmpty );
 		axi4control.ap_idle;
 	endrule
 
 	rule captureStart;
 		Bool currentStart = axi4control.ap_start;
-		if ( !lastApStartR && currentStart && !startedR && !startPendingR ) begin
-			startParamR <= axi4control.scalar00;
-			startPendingR <= True;
+		if ( !lastApStartR && currentStart ) begin
+			startQ.enq(axi4control.scalar00);
 		end
 		lastApStartR <= currentStart;
 	endrule
 
-	rule relayStart ( startPendingR && !startedR );
-		kernelMain.start(startParamR);
-		startPendingR <= False;
+	rule launchStart ( !startedR );
+		Bit#(32) startParam = startQ.first;
+		startQ.deq;
+		kernelMain.start(startParam);
 		startedR <= True;
 		kernelDonePendingR <= False;
 	endrule

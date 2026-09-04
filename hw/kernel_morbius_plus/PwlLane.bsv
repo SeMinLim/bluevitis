@@ -190,7 +190,8 @@ function PwlLaneStage1 prepareDualModeLane(PwlMode mode,
 		if ( count == 0 ) count = 1;
 		integerPart = leadingOne(count);
 		UInt#(18) lead = leadingValue(integerPart);
-		UInt#(30) numerator = zeroExtend(count - lead) << 12;
+		UInt#(30) numerator = zeroExtend(count - lead);
+		numerator = numerator << 12;
 		UInt#(12) fractionCode = truncate(boundedShiftRight30(numerator,
 								integerPart));
 		Bit#(12) fractionBits = pack(fractionCode);
@@ -277,8 +278,10 @@ module mkPwlArray(PwlArrayIfc);
 		stage1Q.deq;
 		Vector#(NumPE_Profiler, PwlLaneStage2) lane = newVector;
 		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			UInt#(27) product = zeroExtend(inputValue.lane[i].delta) *
-						zeroExtend(unpack(inputValue.lane[i].residual));
+			UInt#(27) deltaValue = zeroExtend(inputValue.lane[i].delta);
+			UInt#(27) residualValue =
+				zeroExtend(unpack(inputValue.lane[i].residual));
+			UInt#(27) product = deltaValue * residualValue;
 			lane[i] = PwlLaneStage2{
 				valid: inputValue.lane[i].valid,
 				integerPart: inputValue.lane[i].integerPart,
@@ -315,9 +318,10 @@ module mkPwlArray(PwlArrayIfc);
 						adjustedInteger = adjustedInteger + 1;
 						adjustedFraction = truncate(fractionQ12 - 4096);
 					end
-					UInt#(18) combinedValue =
-						(zeroExtend(adjustedInteger) << 12) |
-						 zeroExtend(adjustedFraction);
+					UInt#(18) integerField = zeroExtend(adjustedInteger);
+					UInt#(18) fractionField = zeroExtend(adjustedFraction);
+					integerField = integerField << 12;
+					UInt#(18) combinedValue = integerField | fractionField;
 					LogValue logValue = truncate(combinedValue);
 					value = zeroExtend(logValue);
 				end else if ( !inputValue.lane[i].underflow ) begin

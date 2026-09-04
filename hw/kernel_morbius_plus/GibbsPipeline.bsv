@@ -147,7 +147,9 @@ function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
 					WeightTree tree,
 					Bit#(24) randomFraction,
 					Bit#(ProfilerValidWidth) validNum);
-	UInt#(47) product = zeroExtend(tree.total) * zeroExtend(unpack(randomFraction));
+	UInt#(47) totalValue = zeroExtend(tree.total);
+	UInt#(47) randomValue = zeroExtend(unpack(randomFraction));
+	UInt#(47) product = totalValue * randomValue;
 	SegmentMass remaining = truncate(product >> 24);
 	Bit#(ProfilerValidWidth) selected = 0;
 
@@ -166,14 +168,19 @@ function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
 		remaining = remaining - tree.sum2[index2];
 	end
 	Bit#(ProfilerOffsetWidth) selectedIdx = truncate(selected);
-	if ( remaining >= zeroExtend(weight[selectedIdx]) ) selected = selected + 1;
+	SegmentMass selectedWeight = zeroExtend(weight[selectedIdx]);
+	if ( remaining >= selectedWeight ) selected = selected + 1;
 	if ( selected >= validNum ) selected = validNum - 1;
 	return truncate(selected);
 endfunction
 
 function GlobalMass boundedGlobalShift(GlobalMass value, UInt#(12) difference);
-	if ( difference >= 36 ) return 0;
-	else return value >> truncate(difference);
+	if ( difference >= 36 ) begin
+		return 0;
+	end else begin
+		Bit#(6) shiftAmount = truncate(pack(difference));
+		return value >> shiftAmount;
+	end
 endfunction
 
 
@@ -574,9 +581,12 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 			};
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			if ( request.valid[p] ) begin
-				response.randomProduct[p] = zeroExtend(request.nextMass[p]) *
-							    zeroExtend(unpack(request.randomFraction[p]));
-				response.segmentRange[p] = zeroExtend(request.alignedSegmentMass[p]) << 24;
+				UInt#(60) nextMassValue = zeroExtend(request.nextMass[p]);
+				UInt#(60) randomValue = zeroExtend(unpack(request.randomFraction[p]));
+				UInt#(60) segmentMassValue =
+					zeroExtend(request.alignedSegmentMass[p]);
+				response.randomProduct[p] = nextMassValue * randomValue;
+				response.segmentRange[p] = segmentMassValue << 24;
 			end
 		end
 		reservoirMultiplyResponseQ.enq(response);

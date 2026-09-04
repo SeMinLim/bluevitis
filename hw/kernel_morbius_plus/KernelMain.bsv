@@ -134,8 +134,11 @@ module mkKernelMain(KernelMainIfc);
 			Bit#(8) command = word[55:48];
 			UInt#(32) batchSize = unpack(word[223:192]);
 			UInt#(32) outputItemNum = command == 0 ? 1 : batchSize;
-			UInt#(40) outputBytes = (zeroExtend(outputItemNum) << 8) + 64;
-			ScoreValue scoreThreshold = truncate(word[159:128]);
+			UInt#(40) outputItemCount = zeroExtend(outputItemNum);
+			UInt#(40) outputBytes = (outputItemCount << 8) + 64;
+			Bit#(32) outputByteCount = truncate(pack(outputBytes));
+			Bit#(25) scoreThresholdBits = word[152:128];
+			ScoreValue scoreThreshold = unpack(scoreThresholdBits);
 
 			commandR <= command;
 			motifLengthR <= word[87:80];
@@ -144,7 +147,7 @@ module mkKernelMain(KernelMainIfc);
 			sequenceBeatIdxR <= 0;
 			outputWriteReqQ.enq(MemPortReq{
 				addr: 0,
-				bytes: truncate(outputBytes)
+				bytes: outputByteCount
 				});
 			if ( command == 0 ) begin
 				pipelineArray.configure(PipelineConfig{
@@ -185,7 +188,8 @@ module mkKernelMain(KernelMainIfc);
 	rule receiveBootstrapState ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_STATE );
 		Bit#(512) word = inputReadWordQ.first;
 		inputReadWordQ.deq;
-		ScoreValue initialBestScore = truncate(word[159:128]);
+		Bit#(25) initialBestScoreBits = word[152:128];
+		ScoreValue initialBestScore = unpack(initialBestScoreBits);
 		pipelineArray.configurePipeline(bootstrapPipelineR,
 						word[127:0],
 						initialBestScore);
@@ -254,7 +258,7 @@ module mkKernelMain(KernelMainIfc);
 		inputReadWordQ.deq;
 		for ( Integer i = 0; i < valueOf(NumPipeline); i = i + 1 ) begin
 			Integer low = i * 32;
-			tentativeOffsetsR[i] <= truncate(word[low + 31:low]);
+			tentativeOffsetsR[i] <= word[low + 10:low];
 		end
 		stateR <= KERNEL_START_PIPELINES;
 	endrule
