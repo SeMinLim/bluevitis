@@ -4,6 +4,8 @@ import FIFOF::*;
 import Vector::*;
 
 import MorbiusMemory::*;
+import LpmMaskedMemory::*;
+import ProfilerAdd::*;
 import MorbiusTypes::*;
 import PwlLane::*;
 import RandomGenerator::*;
@@ -20,7 +22,7 @@ typedef enum {
 
 typedef struct {
 	Bit#(11) segmentStart;
-	Bit#(2) columnOffset;
+	Bool firstColumn;
 	Bit#(ProfilerValidWidth) validNum;
 	Bool finalColumn;
 	Bool finalSegment;
@@ -202,7 +204,12 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 
 	Vector#(NumPipeline, BpmMemoryIfc) bpmMemory <- replicateM(mkBpmMemory);
 	Vector#(NumPipeline, LpmMemoryIfc) lpmMemory <- replicateM(mkLpmMemory);
-	Vector#(NumPipeline, SequenceMemoryIfc) sequenceMemory <- replicateM(mkSequenceMemory);
+	Vector#(NumPipeline, MotifSequenceMemoryIfc) sequenceMemory <-
+		replicateM(mkMotifSequenceMemory);
+	Vector#(ProfilerSequenceReplicaNum, SequenceMemoryIfc) profilerSequenceMemory <-
+		replicateM(mkSequenceMemory);
+	Vector#(NumPipeline, Vector#(ProfilerAddPairNum, ProfilerAddIfc)) profilerAdd <-
+		replicateM(replicateM(mkProfilerAdd));
 	Vector#(NumPipeline, MotifMemoryIfc) previousMotifMemory <-
 		replicateM(mkMotifMemory);
 	Vector#(NumPipeline, PwlArrayIfc) pwlArray <- replicateM(mkPwlArray);
@@ -227,7 +234,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	Reg#(Bit#(11)) phase1SegmentStartR <- mkReg(0);
 	Reg#(Bit#(8)) phase1ColumnR <- mkReg(0);
 	Vector#(NumPipeline, Vector#(NumPE_Profiler, Reg#(LogProb))) phase1AccumR <-
-		replicateM(replicateM(mkReg(0)));
+		replicateM(replicateM(mkRegU));
 	FIFOF#(ProfilerMeta) phase1MetaQ <- mkSizedFIFOF(2);
 
 	//------------------------------------------------------------------------------------
@@ -254,6 +261,9 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			allIdle = allIdle && sequenceMemory[p].loadIdle;
 		end
+		for ( Integer r = 0; r < valueOf(ProfilerSequenceReplicaNum); r = r + 1 ) begin
+			allIdle = allIdle && profilerSequenceMemory[r].loadIdle;
+		end
 		return allIdle;
 	endfunction
 
@@ -275,9 +285,6 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 			phase1RequestOnR <= True;
 			stateR <= ARRAY_PROFILE;
 			for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
-				for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-					phase1AccumR[p][i] <= 0;
-				end
 				globalMassValidR[p] <= False;
 				globalExponentR[p] <= 0;
 				globalMassR[p] <= 0;
@@ -304,18 +311,17 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	//------------------------------------------------------------------------------------
 	// Remove the incoming tentative motif and update only changed LPM entries
 	//------------------------------------------------------------------------------------
-	rule updateRead1 ( stateR == ARRAY_UPDATE_READ );
+	rule updateRead1 ( executionStartedR && stateR == ARRAY_UPDATE_READ );
 		Bit#(8) groupStart = zeroExtend(updateGroupAddressR) << 2;
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			bpmMemory[p].readGroup(updateGroupAddressR);
-			lpmMemory[p].readGroup(updateGroupAddressR);
 			previousMotifMemory[p].readGroup(updateGroupAddressR);
 			sequenceMemory[p].readWindow(tentativeOffsetR[p] + zeroExtend(groupStart));
 		end
 		stateR <= ARRAY_UPDATE_APPLY;
 	endrule
 
-	rule updateApply1 ( stateR == ARRAY_UPDATE_APPLY );
+	rule updateApply1 ( executionStartedR && stateR == ARRAY_UPDATE_APPLY );
 		Bit#(8) groupStart = zeroExtend(updateGroupAddressR) << 2;
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			BpmGroup updatedBpm = bpmMemory[p].readResponse;
@@ -364,24 +370,24 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		stateR <= ARRAY_UPDATE_LOG_WAIT;
 	endrule
 
-	rule updateLogWait1 ( stateR == ARRAY_UPDATE_LOG_WAIT );
+	rule updateLogWait1 ( executionStartedR && stateR == ARRAY_UPDATE_LOG_WAIT );
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			let logResponse <- pwlArray[p].get;
-			LpmGroup updatedLpm = lpmMemory[p].readResponse;
-			Bool writeRequired = False;
+			MotifSymbolGroup previousSymbol = newVector;
+			MotifSymbolGroup currentSymbol = newVector;
+			Vector#(NumPE_LPM, LogValue) previousValue = newVector;
+			Vector#(NumPE_LPM, LogValue) currentValue = newVector;
+			Bit#(NumPE_LPM) changedMask = 0;
 			for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-				if ( changedValidR[p][i] ) begin
-					updatedLpm[i] = setLpmEntry(updatedLpm[i],
-								 changedPreviousSymbolR[p][i],
-								 truncate(logResponse.value[2 * i]));
-					updatedLpm[i] = setLpmEntry(updatedLpm[i],
-								 changedCurrentSymbolR[p][i],
-								 truncate(logResponse.value[2 * i + 1]));
-					writeRequired = True;
-				end
+				previousSymbol[i] = changedPreviousSymbolR[p][i];
+				currentSymbol[i] = changedCurrentSymbolR[p][i];
+				previousValue[i] = truncate(logResponse.value[2 * i]);
+				currentValue[i] = truncate(logResponse.value[2 * i + 1]);
+				changedMask[i] = pack(changedValidR[p][i]);
 			end
-			if ( writeRequired ) begin
-				lpmMemory[p].writeGroup(updateGroupAddressR, updatedLpm);
+			if ( changedMask != 0 ) begin
+				lpmMemory[p].writeChanged(updateGroupAddressR,
+					previousSymbol, currentSymbol, previousValue, currentValue, changedMask);
 			end
 		end
 
@@ -396,25 +402,25 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// Profiler Phase 1: one LPM group and one 16-symbol window per cycle
+	// Profiler Phase 1: one LPM column and shared 16-symbol windows per cycle
 	//------------------------------------------------------------------------------------
-	rule profilerPhase1Request1 ( stateR == ARRAY_PROFILE && phase1RequestOnR );
+	rule profilerPhase1Request1 ( executionStartedR && stateR == ARRAY_PROFILE && phase1RequestOnR );
 		Bit#(ProfilerValidWidth) validNum = calculateValidNum(candidateNumR,
 									phase1SegmentStartR);
 		Bool finalColumn = (phase1ColumnR + 1) >= configR.motifLength;
 		Bit#(12) nextStart = zeroExtend(phase1SegmentStartR) +
 					 fromInteger(valueOf(NumPE_Profiler));
 		Bool finalSegment = nextStart >= zeroExtend(candidateNumR);
-		Bit#(5) groupAddress = truncate(phase1ColumnR >> 2);
-
+		Bit#(7) columnAddress = truncate(phase1ColumnR);
+		for ( Integer r = 0; r < valueOf(ProfilerSequenceReplicaNum); r = r + 1 ) begin
+			profilerSequenceMemory[r].readWindow(phase1SegmentStartR + zeroExtend(phase1ColumnR));
+		end
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
-			lpmMemory[p].readGroup(groupAddress);
-			sequenceMemory[p].readWindow(phase1SegmentStartR +
-							 zeroExtend(phase1ColumnR));
+			lpmMemory[p].readColumn(columnAddress);
 		end
 		phase1MetaQ.enq(ProfilerMeta{
 			segmentStart: phase1SegmentStartR,
-			columnOffset: truncate(phase1ColumnR),
+			firstColumn: phase1ColumnR == 0,
 			validNum: validNum,
 			finalColumn: finalColumn,
 			finalSegment: finalSegment
@@ -432,7 +438,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		end
 	endrule
 
-	rule profilerPhase1Response1 ( stateR == ARRAY_PROFILE );
+	rule profilerPhase1Response1 ( executionStartedR && stateR == ARRAY_PROFILE );
 		ProfilerMeta meta = phase1MetaQ.first;
 		phase1MetaQ.deq;
 		Phase2Meta phase2Meta = Phase2Meta{
@@ -442,22 +448,34 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 			exponent: replicate(0)
 			};
 
+		Vector#(ProfilerSequenceReplicaNum, DecodedSequenceWindow) decoded = newVector;
+		for ( Integer r = 0; r < valueOf(ProfilerSequenceReplicaNum); r = r + 1 ) begin
+			let window <- profilerSequenceMemory[r].getWindow;
+			for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+				decoded[r][i] = decodeSequenceSymbol(window[i]);
+			end
+		end
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
-			LpmGroup lpmGroup = lpmMemory[p].readResponse;
-			let sequenceValue <- sequenceMemory[p].getWindow;
-			LpmEntries lpmValue = lpmGroup[meta.columnOffset];
+			LpmEntries lpmValue = lpmMemory[p].readResponse;
+			Integer replicaIdx = p / valueOf(PipelinePerSequenceReplica);
+			Vector#(NumPE_Profiler, LogProb) operand = replicate(0);
+			Vector#(NumPE_Profiler, LogProb) accumulated = newVector;
 			Vector#(NumPE_Profiler, LogProb) completedLogProb = newVector;
 			for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-				LogProb nextValue = phase1AccumR[p][i];
 				if ( fromInteger(i) < meta.validNum && !terminatedR[p] ) begin
-					LogValue lpmEntry = getLpmEntry(lpmValue, sequenceValue[i]);
-					nextValue = phase1AccumR[p][i] + zeroExtend(lpmEntry);
+					operand[i] = zeroExtend(getDecodedLpmEntry(lpmValue, decoded[replicaIdx][i]));
 				end
-				completedLogProb[i] = nextValue;
-				if ( meta.finalColumn ) phase1AccumR[p][i] <= 0;
-				else phase1AccumR[p][i] <= nextValue;
+				accumulated[i] = meta.firstColumn ? 0 : phase1AccumR[p][i];
 			end
-
+			for ( Integer i = 0; i < valueOf(ProfilerAddPairNum); i = i + 1 ) begin
+				Bit#(48) sum = profilerAdd[p][i].add(accumulated[2 * i], accumulated[2 * i + 1],
+								   operand[2 * i], operand[2 * i + 1]);
+				completedLogProb[2 * i] = unpack(sum[23:0]);
+				completedLogProb[2 * i + 1] = unpack(sum[47:24]);
+			end
+			for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+				phase1AccumR[p][i] <= completedLogProb[i];
+			end
 			if ( meta.finalColumn ) begin
 				LogProb maximum = maxLogProbSegment(completedLogProb, meta.validNum);
 				UInt#(12) exponent = truncate((maximum + 4095) >> 12);
@@ -484,7 +502,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	//------------------------------------------------------------------------------------
 	// Profiler Phase 2: local PPS sampling and streaming segment reservoir
 	//------------------------------------------------------------------------------------
-	rule profilerPhase2Weight1 ( stateR == ARRAY_PROFILE );
+	rule profilerPhase2Weight1 ( executionStartedR && stateR == ARRAY_PROFILE );
 		Phase2Meta meta = phase2MetaQ.first;
 		phase2MetaQ.deq;
 		ReservoirCandidate candidate = ReservoirCandidate{
@@ -520,7 +538,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		reservoirCandidateQ.enq(candidate);
 	endrule
 
-	rule profilerPhase2Commit1 ( stateR == ARRAY_PROFILE );
+	rule profilerPhase2Commit1 ( executionStartedR && stateR == ARRAY_PROFILE );
 		ReservoirCandidate candidate = reservoirCandidateQ.first;
 		reservoirCandidateQ.deq;
 		ReservoirMultiplyRequest multiplyRequest = ReservoirMultiplyRequest{
@@ -568,7 +586,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		reservoirMultiplyRequestQ.enq(multiplyRequest);
 	endrule
 
-	rule profilerReservoirMultiply1 ( stateR == ARRAY_PROFILE );
+	rule profilerReservoirMultiply1 ( executionStartedR && stateR == ARRAY_PROFILE );
 		ReservoirMultiplyRequest request = reservoirMultiplyRequestQ.first;
 		reservoirMultiplyRequestQ.deq;
 		ReservoirMultiplyResponse response = ReservoirMultiplyResponse{
@@ -592,7 +610,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		reservoirMultiplyResponseQ.enq(response);
 	endrule
 
-	rule profilerReservoirSelect1 ( stateR == ARRAY_PROFILE );
+	rule profilerReservoirSelect1 ( executionStartedR && stateR == ARRAY_PROFILE );
 		ReservoirMultiplyResponse response = reservoirMultiplyResponseQ.first;
 		reservoirMultiplyResponseQ.deq;
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
@@ -616,7 +634,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	//------------------------------------------------------------------------------------
 	// Insert four columns per cycle and calculate the complete-state score in one pass
 	//------------------------------------------------------------------------------------
-	rule insertRequest1 ( stateR == ARRAY_INSERT && insertRequestOnR );
+	rule insertRequest1 ( executionStartedR && stateR == ARRAY_INSERT && insertRequestOnR );
 		Bit#(8) groupStart = zeroExtend(insertGroupAddressR) << 2;
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			bpmMemory[p].readGroup(insertGroupAddressR);
@@ -632,7 +650,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		end
 	endrule
 
-	rule insertResponse1 ( stateR == ARRAY_INSERT );
+	rule insertResponse1 ( executionStartedR && stateR == ARRAY_INSERT );
 		Bit#(5) groupAddress = insertGroupAddressQ.first;
 		insertGroupAddressQ.deq;
 		Bit#(8) groupStart = zeroExtend(groupAddress) << 2;
@@ -737,6 +755,9 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 		if ( stateR == ARRAY_IDLE );
 		for ( Integer p = 0; p < valueOf(NumPipeline); p = p + 1 ) begin
 			sequenceMemory[p].loadBeat(beatIdx, word);
+		end
+		for ( Integer r = 0; r < valueOf(ProfilerSequenceReplicaNum); r = r + 1 ) begin
+			profilerSequenceMemory[r].loadBeat(beatIdx, word);
 		end
 	endmethod
 

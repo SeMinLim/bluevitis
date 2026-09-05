@@ -20,6 +20,11 @@ endinterface
 
 (* synthesize *)
 (* default_reset="ap_rst_n", default_clock_osc="ap_clk" *)
+// Completion wins arbitration once both AXI streams are idle.
+(* descending_urgency = "finishKernel, relayInputReadReq" *)
+(* descending_urgency = "finishKernel, relayInputReadWord" *)
+(* descending_urgency = "finishKernel, relayOutputWriteReq" *)
+(* descending_urgency = "finishKernel, relayOutputWriteWord" *)
 module kernel(KernelTopIfc);
 	Clock defaultClock <- exposeCurrentClock;
 	Reset defaultReset <- exposeCurrentReset;

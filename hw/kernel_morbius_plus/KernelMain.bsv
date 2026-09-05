@@ -123,7 +123,7 @@ module mkKernelMain(KernelMainIfc);
 		allDoneR <= False;
 	endrule
 
-	rule receiveHeader ( startedR && stateR == KERNEL_RECV_HEADER );
+	rule receiveHeader ( startedR && stateR == KERNEL_RECV_HEADER && !pipelineArray.busy );
 		Bit#(512) word = inputReadWordQ.first;
 		inputReadWordQ.deq;
 		if ( word[31:0] != commandMagic || word[47:32] != protocolVersion ) begin
@@ -197,7 +197,7 @@ module mkKernelMain(KernelMainIfc);
 		stateR <= KERNEL_RECV_BOOTSTRAP_BPM;
 	endrule
 
-	rule receiveBootstrapBpm ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM );
+	rule receiveBootstrapBpm ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_BPM && !pipelineArray.busy );
 		Bit#(512) word = inputReadWordQ.first;
 		inputReadWordQ.deq;
 		Bit#(2) columnOffset = truncate(bootstrapColumnR);
@@ -221,7 +221,7 @@ module mkKernelMain(KernelMainIfc);
 		end
 	endrule
 
-	rule receiveBootstrapLpm ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM );
+	rule receiveBootstrapLpm ( startedR && stateR == KERNEL_RECV_BOOTSTRAP_LPM && !pipelineArray.busy );
 		Bit#(512) word = inputReadWordQ.first;
 		inputReadWordQ.deq;
 		Bit#(2) columnOffset = truncate(bootstrapColumnR);

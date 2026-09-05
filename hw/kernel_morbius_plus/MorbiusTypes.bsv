@@ -10,6 +10,9 @@ typedef 16 NumPipeline;
 typedef 16 NumPE_Profiler;
 typedef 4 NumPE_LPM;
 typedef 4 PipelinePerResultBeat;
+typedef 2 ProfilerSequenceReplicaNum;
+typedef TDiv#(NumPipeline, ProfilerSequenceReplicaNum) PipelinePerSequenceReplica;
+typedef TDiv#(NumPE_Profiler, 2) ProfilerAddPairNum;
 typedef 16 SequenceRowSymbolNum;
 typedef 64 SequenceRowNum;
 typedef TDiv#(SequenceRowNum, 2) SequenceBankDepth;
@@ -45,6 +48,8 @@ typedef Bit#(360) MatrixColumn;
 typedef Vector#(SequenceRowSymbolNum, Symbol) SequenceRow;
 typedef Vector#(NumPE_Profiler, Symbol) SequenceWindow;
 typedef Vector#(NumPE_LPM, Symbol) MotifSymbolGroup;
+typedef Bit#(AlphabetMax) SymbolSelect;
+typedef Vector#(NumPE_Profiler, SymbolSelect) DecodedSequenceWindow;
 
 
 //------------------------------------------------------------------------------------
@@ -280,58 +285,52 @@ endfunction
 function SequenceWindow selectSequenceWindow(SequenceRow row0,
 				      SequenceRow row1,
 				      Bit#(4) startIndex);
-	Vector#(32, Symbol) combined = append(row0, row1);
+	Vector#(32, Symbol) shifted = append(row0, row1);
+	for ( Integer stage = 0; stage < 4; stage = stage + 1 ) begin
+		Integer distance = 2 ** stage;
+		Vector#(32, Symbol) nextValue = newVector;
+		for ( Integer i = 0; i < 32; i = i + 1 ) begin
+			Symbol moved = 0;
+			if ( i + distance < 32 ) moved = shifted[i + distance];
+			nextValue[i] = startIndex[stage] == 1 ? moved : shifted[i];
+		end
+		shifted = nextValue;
+	end
 	SequenceWindow result = newVector;
-	case ( startIndex )
-		0: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i];
-		end
-		1: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 1];
-		end
-		2: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 2];
-		end
-		3: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 3];
-		end
-		4: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 4];
-		end
-		5: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 5];
-		end
-		6: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 6];
-		end
-		7: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 7];
-		end
-		8: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 8];
-		end
-		9: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 9];
-		end
-		10: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 10];
-		end
-		11: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 11];
-		end
-		12: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 12];
-		end
-		13: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 13];
-		end
-		14: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 14];
-		end
-		default: begin
-			for ( Integer i = 0; i < 16; i = i + 1 ) result[i] = combined[i + 15];
-		end
-	endcase
+	for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+		result[i] = shifted[i];
+	end
+	return result;
+endfunction
+
+
+// Motif maintenance needs only four symbols, not a full Profiler window.
+function MotifSymbolGroup selectMotifWindow(SequenceRow row0,
+					  SequenceRow row1,
+					  Bit#(4) startIndex);
+	SequenceWindow window = selectSequenceWindow(row0, row1, startIndex);
+	MotifSymbolGroup result = newVector;
+	for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
+		result[i] = window[i];
+	end
+	return result;
+endfunction
+
+function SymbolSelect decodeSequenceSymbol(Symbol symbol);
+	SymbolSelect result = 0;
+	for ( Integer s = 0; s < valueOf(AlphabetMax) - 1; s = s + 1 ) begin
+		result[s] = pack(symbol == fromInteger(s));
+	end
+	// Match getLpmEntry's default for protocol values 19 through 31.
+	result[19] = pack(symbol >= 19);
+	return result;
+endfunction
+
+function LogValue getDecodedLpmEntry(LpmEntries entry, SymbolSelect select);
+	LogValue result = 0;
+	for ( Integer s = 0; s < valueOf(AlphabetMax); s = s + 1 ) begin
+		result = result | (select[s] == 1 ? entry[s] : 0);
+	end
 	return result;
 endfunction
 

@@ -40,38 +40,6 @@ endmodule
 
 
 //------------------------------------------------------------------------------------
-// Four-column LPM storage in simple-dual-port block RAM
-//------------------------------------------------------------------------------------
-interface LpmMemoryIfc;
-	method Action loadGroup(Bit#(5) address, LpmGroup value);
-	method Action readGroup(Bit#(5) address);
-	method LpmGroup readResponse;
-	method Action writeGroup(Bit#(5) address, LpmGroup value);
-endinterface
-
-module mkLpmMemory(LpmMemoryIfc);
-	SdpMemoryIfc#(Bit#(5), LpmGroup) memory <-
-		mkSdpMemory(valueOf(MotifGroupDepth));
-
-	method Action loadGroup(Bit#(5) address, LpmGroup value);
-		memory.write(address, value);
-	endmethod
-
-	method Action readGroup(Bit#(5) address);
-		memory.readRequest(address);
-	endmethod
-
-	method LpmGroup readResponse;
-		return memory.readResponse;
-	endmethod
-
-	method Action writeGroup(Bit#(5) address, LpmGroup value);
-		memory.write(address, value);
-	endmethod
-endmodule
-
-
-//------------------------------------------------------------------------------------
 // Four-symbol tentative-motif storage
 //------------------------------------------------------------------------------------
 interface MotifMemoryIfc;
@@ -189,6 +157,88 @@ module mkSequenceMemory(SequenceMemoryIfc);
 		SequenceRow firstRow = meta.firstRowEven ? evenRow : oddRow;
 		SequenceRow secondRow = meta.firstRowEven ? oddRow : evenRow;
 		return selectSequenceWindow(firstRow, secondRow, meta.startIndex);
+	endmethod
+endmodule
+
+// Pipeline-specific four-symbol access only.
+interface MotifSequenceMemoryIfc;
+	method Action loadBeat(Bit#(4) beatIdx, Bit#(512) word);
+	method Bool loadIdle;
+	method Action readWindow(Bit#(11) startPosition);
+	method ActionValue#(MotifSymbolGroup) getWindow;
+endinterface
+
+module mkMotifSequenceMemory(MotifSequenceMemoryIfc);
+	SdpMemoryIfc#(Bit#(5), SequenceRow) evenRowMemory <-
+		mkSdpMemory(valueOf(SequenceBankDepth));
+	SdpMemoryIfc#(Bit#(5), SequenceRow) oddRowMemory <-
+		mkSdpMemory(valueOf(SequenceBankDepth));
+
+	FIFOF#(SequenceLoadRequest) loadQ <- mkSizedFIFOF(2);
+	FIFOF#(SequenceWindowMeta) windowMetaQ <- mkSizedFIFOF(2);
+	Reg#(Bool) loadSecondOn <- mkReg(False);
+	Reg#(SequenceLoadRequest) loadRequestR <- mkRegU;
+
+	rule loadRows1 ( !loadSecondOn );
+		SequenceLoadRequest request = loadQ.first;
+		loadQ.deq;
+		Bit#(5) pairAddress = {request.beatIdx, 1'b0};
+		evenRowMemory.write(pairAddress, packSequenceRow(request.word, 0));
+		oddRowMemory.write(pairAddress, packSequenceRow(request.word, 1));
+		loadRequestR <= request;
+		loadSecondOn <= True;
+	endrule
+
+	rule loadRows2 ( loadSecondOn );
+		Bit#(5) pairAddress = {loadRequestR.beatIdx, 1'b0} + 1;
+		evenRowMemory.write(pairAddress, packSequenceRow(loadRequestR.word, 2));
+		oddRowMemory.write(pairAddress, packSequenceRow(loadRequestR.word, 3));
+		loadSecondOn <= False;
+	endrule
+
+	method Action loadBeat(Bit#(4) beatIdx, Bit#(512) word);
+		loadQ.enq(SequenceLoadRequest{
+			beatIdx: beatIdx,
+			word: word
+			});
+	endmethod
+
+	method Bool loadIdle;
+		return !loadQ.notEmpty && !loadSecondOn;
+	endmethod
+
+	method Action readWindow(Bit#(11) startPosition)
+		if ( !loadQ.notEmpty && !loadSecondOn );
+		Bit#(6) rowAddress = truncate(startPosition >> 4);
+		Bit#(5) pairAddress = truncate(rowAddress >> 1);
+		Bit#(4) startIndex = truncate(startPosition);
+		Bool firstRowEven = rowAddress[0] == 0;
+
+		if ( firstRowEven ) begin
+			evenRowMemory.readRequest(pairAddress);
+			oddRowMemory.readRequest(pairAddress);
+		end else begin
+			oddRowMemory.readRequest(pairAddress);
+			if ( rowAddress == fromInteger(valueOf(SequenceRowNum) - 1) ) begin
+				evenRowMemory.readRequest(0);
+			end else begin
+				evenRowMemory.readRequest(pairAddress + 1);
+			end
+		end
+		windowMetaQ.enq(SequenceWindowMeta{
+			firstRowEven: firstRowEven,
+			startIndex: startIndex
+			});
+	endmethod
+
+	method ActionValue#(MotifSymbolGroup) getWindow;
+		SequenceWindowMeta meta = windowMetaQ.first;
+		windowMetaQ.deq;
+		SequenceRow evenRow = evenRowMemory.readResponse;
+		SequenceRow oddRow = oddRowMemory.readResponse;
+		SequenceRow firstRow = meta.firstRowEven ? evenRow : oddRow;
+		SequenceRow secondRow = meta.firstRowEven ? oddRow : evenRow;
+		return selectMotifWindow(firstRow, secondRow, meta.startIndex);
 	endmethod
 endmodule
 

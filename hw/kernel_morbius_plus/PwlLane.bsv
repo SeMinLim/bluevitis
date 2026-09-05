@@ -13,11 +13,17 @@ endinterface
 
 
 typedef struct {
+	PwlMode mode;
+	Vector#(NumPE_Profiler, UInt#(18)) value;
+	Bit#(NumPE_Profiler) validMask;
+} PwlPackedRequest deriving (Bits, Eq, FShow);
+
+typedef struct {
 	Bool valid;
 	UInt#(5) integerPart;
 	Bool underflow;
 	UInt#(19) base;
-	UInt#(19) delta;
+	UInt#(15) delta;
 	Bit#(8) residual;
 } PwlLaneStage1 deriving (Bits, Eq, FShow);
 
@@ -31,7 +37,7 @@ typedef struct {
 	UInt#(5) integerPart;
 	Bool underflow;
 	UInt#(19) base;
-	UInt#(27) product;
+	UInt#(23) product;
 } PwlLaneStage2 deriving (Bits, Eq, FShow);
 
 typedef struct {
@@ -40,7 +46,7 @@ typedef struct {
 } PwlStage2 deriving (Bits, Eq, FShow);
 
 
-function Tuple2#(UInt#(19), UInt#(19)) getLogCoefficient(Bit#(4) interval);
+function Tuple2#(UInt#(19), UInt#(15)) getLogCoefficient(Bit#(4) interval);
 	case ( interval )
 		0: return tuple2(0, 22928);
 		1: return tuple2(22928, 21617);
@@ -61,7 +67,7 @@ function Tuple2#(UInt#(19), UInt#(19)) getLogCoefficient(Bit#(4) interval);
 	endcase
 endfunction
 
-function Tuple2#(UInt#(19), UInt#(19)) getExpCoefficient(Bit#(4) interval);
+function Tuple2#(UInt#(19), UInt#(15)) getExpCoefficient(Bit#(4) interval);
 	case ( interval )
 		0: return tuple2(262144, 11114);
 		1: return tuple2(251030, 10643);
@@ -104,100 +110,49 @@ function UInt#(5) leadingOne(UInt#(18) count);
 	return result;
 endfunction
 
-function UInt#(18) leadingValue(UInt#(5) shift);
-	case ( shift )
-		0: return 1;
-		1: return 2;
-		2: return 4;
-		3: return 8;
-		4: return 16;
-		5: return 32;
-		6: return 64;
-		7: return 128;
-		8: return 256;
-		9: return 512;
-		10: return 1024;
-		11: return 2048;
-		12: return 4096;
-		13: return 8192;
-		14: return 16384;
-		15: return 32768;
-		16: return 65536;
-		default: return 131072;
-	endcase
-endfunction
+
 
 function UInt#(30) boundedShiftRight30(UInt#(30) value, UInt#(5) shift);
-	case ( shift )
-		0: return value;
-		1: return value >> 1;
-		2: return value >> 2;
-		3: return value >> 3;
-		4: return value >> 4;
-		5: return value >> 5;
-		6: return value >> 6;
-		7: return value >> 7;
-		8: return value >> 8;
-		9: return value >> 9;
-		10: return value >> 10;
-		11: return value >> 11;
-		12: return value >> 12;
-		13: return value >> 13;
-		14: return value >> 14;
-		15: return value >> 15;
-		16: return value >> 16;
-		default: return value >> 17;
-	endcase
+	UInt#(30) result = value;
+	Bit#(5) shiftBits = pack(shift);
+	for ( Integer stage = 0; stage < 5; stage = stage + 1 ) begin
+		if ( shiftBits[stage] == 1 ) result = result >> (2 ** stage);
+	end
+	return result;
 endfunction
 
 function WeightValue boundedShiftRight19(WeightValue value, UInt#(5) shift);
-	case ( shift )
-		0: return value;
-		1: return value >> 1;
-		2: return value >> 2;
-		3: return value >> 3;
-		4: return value >> 4;
-		5: return value >> 5;
-		6: return value >> 6;
-		7: return value >> 7;
-		8: return value >> 8;
-		9: return value >> 9;
-		10: return value >> 10;
-		11: return value >> 11;
-		12: return value >> 12;
-		13: return value >> 13;
-		14: return value >> 14;
-		15: return value >> 15;
-		16: return value >> 16;
-		17: return value >> 17;
-		18: return value >> 18;
-		default: return 0;
-	endcase
+	WeightValue result = value;
+	Bit#(5) shiftBits = pack(shift);
+	for ( Integer stage = 0; stage < 5; stage = stage + 1 ) begin
+		if ( shiftBits[stage] == 1 ) result = result >> (2 ** stage);
+	end
+	return result;
 endfunction
 
 function PwlLaneStage1 prepareDualModeLane(PwlMode mode,
-					    PwlInput inputValue,
+					    UInt#(18) inputValue,
 					    Bool valid);
 	UInt#(5) integerPart = 0;
 	Bool underflow = False;
 	Bit#(4) interval = 0;
 	Bit#(8) residual = 0;
 	UInt#(19) base = 0;
-	UInt#(19) delta = 0;
+	UInt#(15) delta = 0;
 
 	if ( mode == PWL_LOG2 ) begin
 		UInt#(18) count = truncate(inputValue);
 		if ( count == 0 ) count = 1;
 		integerPart = leadingOne(count);
-		UInt#(18) lead = leadingValue(integerPart);
-		UInt#(30) numerator = zeroExtend(count - lead);
+		// Truncating to the low 12 bits removes the leading integer one.
+		UInt#(30) numerator = zeroExtend(count);
 		numerator = numerator << 12;
 		UInt#(12) fractionCode = truncate(boundedShiftRight30(numerator,
 								integerPart));
 		Bit#(12) fractionBits = pack(fractionCode);
 		interval = fractionBits[11:8];
 		residual = fractionBits[7:0];
-		Tuple2#(UInt#(19), UInt#(19)) coefficient = getLogCoefficient(interval);
+		Tuple2#(UInt#(19), UInt#(15)) coefficient = getLogCoefficient(interval);
 		base = tpl_1(coefficient);
 		delta = tpl_2(coefficient);
 	end else begin
@@ -207,7 +162,7 @@ function PwlLaneStage1 prepareDualModeLane(PwlMode mode,
 		Bit#(12) fractionCode = truncate(pack(inputValue));
 		interval = fractionCode[11:8];
 		residual = fractionCode[7:0];
-		Tuple2#(UInt#(19), UInt#(19)) coefficient = getExpCoefficient(interval);
+		Tuple2#(UInt#(19), UInt#(15)) coefficient = getExpCoefficient(interval);
 		base = tpl_1(coefficient);
 		delta = tpl_2(coefficient);
 	end
@@ -223,13 +178,13 @@ function PwlLaneStage1 prepareDualModeLane(PwlMode mode,
 endfunction
 
 function PwlLaneStage1 prepareExpOnlyLane(PwlMode mode,
-					   PwlInput inputValue,
+					   UInt#(18) inputValue,
 					   Bool valid);
 	UInt#(12) expInteger = truncate(inputValue >> 12);
 	Bit#(12) fractionCode = truncate(pack(inputValue));
 	Bit#(4) interval = fractionCode[11:8];
 	Bit#(8) residual = fractionCode[7:0];
-	Tuple2#(UInt#(19), UInt#(19)) coefficient = getExpCoefficient(interval);
+	Tuple2#(UInt#(19), UInt#(15)) coefficient = getExpCoefficient(interval);
 	return PwlLaneStage1{
 		valid: valid && mode == PWL_EXP2,
 		integerPart: truncate(expInteger),
@@ -242,7 +197,7 @@ endfunction
 
 
 module mkPwlArray(PwlArrayIfc);
-	FIFOF#(PwlArrayRequest) requestQ <- mkSizedFIFOF(2);
+	FIFOF#(PwlPackedRequest) requestQ <- mkSizedFIFOF(2);
 	FIFOF#(PwlStage1) stage1Q <- mkSizedFIFOF(2);
 	FIFOF#(PwlStage2) stage2Q <- mkSizedFIFOF(2);
 	FIFOF#(PwlArrayResponse) responseQ <- mkSizedFIFOF(2);
@@ -251,15 +206,15 @@ module mkPwlArray(PwlArrayIfc);
 	// Stage 1: eight dual-mode lanes and eight exp-only lanes
 	//------------------------------------------------------------------------------------
 	rule process1;
-		PwlArrayRequest request = requestQ.first;
+		PwlPackedRequest request = requestQ.first;
 		requestQ.deq;
 		Vector#(NumPE_Profiler, PwlLaneStage1) lane = newVector;
-		for ( Integer i = 0; i < 8; i = i + 1 ) begin
+		for ( Integer i = 0; i < 2 * valueOf(NumPE_LPM); i = i + 1 ) begin
 			lane[i] = prepareDualModeLane(request.mode,
 						  request.value[i],
 						  request.validMask[i] == 1);
 		end
-		for ( Integer i = 8; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+		for ( Integer i = 2 * valueOf(NumPE_LPM); i < valueOf(NumPE_Profiler); i = i + 1 ) begin
 			lane[i] = prepareExpOnlyLane(request.mode,
 						 request.value[i],
 						 request.validMask[i] == 1);
@@ -278,10 +233,10 @@ module mkPwlArray(PwlArrayIfc);
 		stage1Q.deq;
 		Vector#(NumPE_Profiler, PwlLaneStage2) lane = newVector;
 		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
-			UInt#(27) deltaValue = zeroExtend(inputValue.lane[i].delta);
-			UInt#(27) residualValue =
+			UInt#(23) deltaValue = zeroExtend(inputValue.lane[i].delta);
+			UInt#(23) residualValue =
 				zeroExtend(unpack(inputValue.lane[i].residual));
-			UInt#(27) product = deltaValue * residualValue;
+			UInt#(23) product = deltaValue * residualValue;
 			lane[i] = PwlLaneStage2{
 				valid: inputValue.lane[i].valid,
 				integerPart: inputValue.lane[i].integerPart,
@@ -305,30 +260,32 @@ module mkPwlArray(PwlArrayIfc);
 		PwlArrayResponse response = PwlArrayResponse{value: replicate(0)};
 		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
 			WeightValue value = 0;
-			UInt#(20) correction = truncate((inputValue.lane[i].product + 128) >> 8);
-			if ( inputValue.lane[i].valid ) begin
-				if ( inputValue.mode == PWL_LOG2 ) begin
-					UInt#(19) fractionQ18 = inputValue.lane[i].base +
-								 truncate(correction);
-					UInt#(13) fractionQ12 = truncate((fractionQ18 + 32) >> 6);
-					UInt#(6) adjustedInteger =
-						zeroExtend(inputValue.lane[i].integerPart);
-					UInt#(12) adjustedFraction = truncate(fractionQ12);
-					if ( fractionQ12 >= 4096 ) begin
-						adjustedInteger = adjustedInteger + 1;
-						adjustedFraction = truncate(fractionQ12 - 4096);
+			UInt#(15) correction = truncate((inputValue.lane[i].product + 128) >> 8);
+			// Elaboration-time specialization excludes log output logic from exp-only lanes.
+			if ( i < 2 * valueOf(NumPE_LPM) ) begin
+				if ( inputValue.lane[i].valid ) begin
+					if ( inputValue.mode == PWL_LOG2 ) begin
+						UInt#(19) fractionQ18 = inputValue.lane[i].base + zeroExtend(correction);
+						UInt#(13) fractionQ12 = truncate((fractionQ18 + 32) >> 6);
+						UInt#(6) adjustedInteger = zeroExtend(inputValue.lane[i].integerPart);
+						UInt#(12) adjustedFraction = truncate(fractionQ12);
+						if ( fractionQ12 >= 4096 ) begin
+							adjustedInteger = adjustedInteger + 1;
+							adjustedFraction = truncate(fractionQ12 - 4096);
+						end
+						UInt#(18) integerField = zeroExtend(adjustedInteger) << 12;
+						UInt#(18) fractionField = zeroExtend(adjustedFraction);
+						LogValue logValue = truncate(integerField | fractionField);
+						value = zeroExtend(logValue);
+					end else if ( !inputValue.lane[i].underflow ) begin
+						WeightValue fractionQ18 = inputValue.lane[i].base - zeroExtend(correction);
+						value = boundedShiftRight19(fractionQ18, inputValue.lane[i].integerPart);
 					end
-					UInt#(18) integerField = zeroExtend(adjustedInteger);
-					UInt#(18) fractionField = zeroExtend(adjustedFraction);
-					integerField = integerField << 12;
-					UInt#(18) combinedValue = integerField | fractionField;
-					LogValue logValue = truncate(combinedValue);
-					value = zeroExtend(logValue);
-				end else if ( !inputValue.lane[i].underflow ) begin
-					WeightValue fractionQ18 = inputValue.lane[i].base -
-								       truncate(correction);
-					value = boundedShiftRight19(fractionQ18,
-								   inputValue.lane[i].integerPart);
+				end
+			end else begin
+				if ( inputValue.lane[i].valid && !inputValue.lane[i].underflow ) begin
+					WeightValue fractionQ18 = inputValue.lane[i].base - zeroExtend(correction);
+					value = boundedShiftRight19(fractionQ18, inputValue.lane[i].integerPart);
 				end
 			end
 			response.value[i] = value;
@@ -337,7 +294,20 @@ module mkPwlArray(PwlArrayIfc);
 	endrule
 
 	method Action put(PwlArrayRequest request);
-		requestQ.enq(request);
+		PwlPackedRequest packedRequest = PwlPackedRequest{
+			mode: request.mode,
+			value: replicate(0),
+			validMask: request.validMask
+			};
+		for ( Integer i = 0; i < valueOf(NumPE_Profiler); i = i + 1 ) begin
+			UInt#(18) encodedValue = truncate(request.value[i]);
+			// An exp integer part above 18 is represented by one underflow code.
+			if ( request.mode == PWL_EXP2 && request.value[i] >= 77824 ) begin
+				encodedValue = 131072;
+			end
+			packedRequest.value[i] = encodedValue;
+		end
+		requestQ.enq(packedRequest);
 	endmethod
 
 	method ActionValue#(PwlArrayResponse) get;

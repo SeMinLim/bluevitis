@@ -39,6 +39,8 @@ $(OBJ_DIR)/verilog/.done: $(wildcard *.bsv) $(wildcard *.v) scripts/verilogcopy.
 	cd $(OBJ_DIR)/verilog/ && bash ../../scripts/verilogcopy.sh
 	cp *.v $(OBJ_DIR)/verilog/
 	test -f $(OBJ_DIR)/verilog/MorbiusSdpRam.v
+	test -f $(OBJ_DIR)/verilog/MorbiusLpmRam.v
+	test -f $(OBJ_DIR)/verilog/MorbiusProfilerAdd.v
 	@touch $@
 $(BUILD_DIR)/kernel.xo: ./kernel.xml ./scripts/package_kernel.tcl ./scripts/gen_xo.tcl $(OBJ_DIR)/verilog/.done
 	mkdir -p $(BUILD_DIR)

@@ -15,9 +15,12 @@ This directory contains the blueVitis-compatible Morbius+ RTL kernel for the Alv
 ## Resource-oriented microarchitecture
 
 - one shared controller advances sixteen independent Gibbs states
-- packed 5-bit sequence rows and bounded 16-symbol windows replace wide variable shifts
-- BPM, LPM, and tentative-motif state use explicit block RAM
-- one vector PWL array per Gibbs state contains eight log/exp lanes and eight exp-only lanes
+- two common 16-symbol Profiler window providers serve the sixteen searches; pipeline-specific motif reads return four symbols
+- packed 5-bit sequence rows use staged bounded window selection
+- BPM and tentative-motif state use explicit block RAM
+- LPM uses symbol-banked RAMB36E2 with masked four-entry writes and one-column reads
+- one vector PWL array per Gibbs state contains eight log/exp lanes and eight exp-only lanes with narrowed internal messages
+- paired 24-bit Profiler additions use DSP48E2 TWO24 without changing accumulator feedback latency
 - Phase 2 reuses one weight reduction tree and performs streaming weighted-reservoir sampling
 - tentative-motif insertion and complete-state score calculation share one pass
 - the input and output ports use specialized burst read and burst write masters
