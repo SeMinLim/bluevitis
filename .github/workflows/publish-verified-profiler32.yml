@@ -1,0 +1,99 @@
+name: Publish verified Morbius+ 32-lane sources
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publish-verified-profiler32.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: morbius-profiler32-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    env:
+      VERIFIED_COMMIT: 8441270dd6b2f316cf3c9020044510829d2214d3
+      SOURCE_BASE: 6d9105a64219e70205dcdbd0c36a459b32a14e67
+      GIT_AUTHOR_NAME: Se-Min Lim
+      GIT_AUTHOR_EMAIL: seminl1@kookmin.ac.kr
+      GIT_COMMITTER_NAME: Se-Min Lim
+      GIT_COMMITTER_EMAIL: seminl1@kookmin.ac.kr
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Confirm completed RTL verification and unchanged source inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$VERIFIED_COMMIT"
+          test "$(git diff --name-only "$VERIFIED_COMMIT" HEAD)" = '.github/workflows/publish-verified-profiler32.yml'
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.request
+          base = 'https://api.github.com/repos/SeMinLim/bluevitis'
+          def get(path):
+              request = urllib.request.Request(base + path, headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json',
+                  'User-Agent': 'morbius32-publisher'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          run = get('/actions/runs/34018646584')
+          job = get('/actions/jobs/101447019087')
+          assert run['head_sha'] == os.environ['VERIFIED_COMMIT']
+          assert run['status'] == 'completed' and job['run_id'] == run['id']
+          steps = {step['name']: step for step in job['steps']}
+          for name in ['Apply the inspected 32-lane changes',
+                       'Elaborate and verify production RTL, boundaries and host model',
+                       'Preserve validation evidence']:
+              assert steps[name]['conclusion'] == 'success', name
+          assert steps['Publish clean main with the requested author and committer']['conclusion'] == 'failure'
+          files = subprocess.check_output(['git', 'diff', '--name-only',
+              os.environ['SOURCE_BASE'], os.environ['VERIFIED_COMMIT']], text=True).splitlines()
+          assert files and all(path.startswith('.github/') for path in files)
+          print('Confirmed: complete RTL verification passed; only publication failed in run 34018646584.')
+          PY
+      - name: Reconstruct exactly the previously verified production sources
+        run: |
+          set -euo pipefail
+          python3 .github/apply32.py
+          make -C sw/host_morbius_plus test CXXFLAGS='-std=c++17 -Wall -Wextra -pedantic -Werror -O2'
+          make -C sw/host_morbius_plus clean
+          git add -- hw/kernel_morbius_plus sw/host_morbius_plus/MorbiusPlus.h
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          expected = {'hw/kernel_morbius_plus/' + name for name in [
+              'MorbiusTypes.bsv', 'MorbiusMemory.bsv', 'GibbsPipeline.bsv',
+              'PwlLane.bsv', 'README.md', 'test/TestProfiler32.bsv',
+              'test/TestSequenceMemory32.bsv']}
+          expected.add('sw/host_morbius_plus/MorbiusPlus.h')
+          changed = set(subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines())
+          assert changed == expected, (changed, expected)
+          types = Path('hw/kernel_morbius_plus/MorbiusTypes.bsv').read_text()
+          for value in ['typedef 16 NumPipeline;', 'typedef 32 NumPE_Profiler;',
+                        'typedef 4 NumPE_LPM;', 'typedef UInt#(24) SegmentMass;']:
+              assert value in types, value
+          assert '#define ACCELSEGMENTSIZE 32' in Path('sw/host_morbius_plus/MorbiusPlus.h').read_text()
+          print('Confirmed all eight intended 32/32 source changes.')
+          PY
+      - name: Remove workflows and publish directly to main
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+          git rm -r -f .github
+          git diff --cached --check
+          git config user.name 'Se-Min Lim'
+          git config user.email 'seminl1@kookmin.ac.kr'
+          git commit -m 'Expand Morbius+ to 32 Profiler PEs and 32 PWL lanes'
+          test -z "$(git ls-tree -r --name-only HEAD | grep '^.github/' || true)"
+          test -z "$(git ls-tree -r --name-only HEAD hw/kernel_morbius_plus sw/host_morbius_plus | grep -E '(^|/)obj/' || true)"
+          git push origin HEAD:main
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$(git rev-parse HEAD)"
+          git show -s --format='%H%n%an <%ae>%n%cn <%ce>%n%s' HEAD
+          git rev-parse HEAD:hw/kernel_morbius_plus
+          git rev-parse HEAD:sw/host_morbius_plus/MorbiusPlus.h
