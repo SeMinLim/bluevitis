@@ -1,0 +1,89 @@
+name: Validate and publish Morbius+ 32-lane Profiler
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/validate-profiler32.yml']
+permissions:
+  contents: write
+concurrency:
+  group: morbius-profiler32
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 70
+    env:
+      BASE_COMMIT: 6d9105a64219e70205dcdbd0c36a459b32a14e67
+      GIT_AUTHOR_NAME: Se-Min Lim
+      GIT_AUTHOR_EMAIL: seminl1@kookmin.ac.kr
+      GIT_COMMITTER_NAME: Se-Min Lim
+      GIT_COMMITTER_EMAIL: seminl1@kookmin.ac.kr
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Check base and install compilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$BASE_COMMIT"
+          test -z "$(git ls-tree -r --name-only "$BASE_COMMIT" | grep '^.github/' || true)"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iverilog libgmp10 libtinfo6
+          mkdir -p /tmp/bsc
+          curl -fL --retry 3 https://github.com/B-Lang-org/bsc/releases/download/2026.01/bsc-2026.01-ubuntu-22.04.tar.gz -o /tmp/bsc.tar.gz
+          echo '9f32be4cb34dc025a47d8dddfa119ec8e7a5fd7240b6de31d175aa4e65fd5301  /tmp/bsc.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/bsc.tar.gz --strip-components=1 -C /tmp/bsc
+          echo '/tmp/bsc/bin' >> "$GITHUB_PATH"
+          echo 'BSC_HOME=/tmp/bsc' >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/Xilinx/XilinxUnisimLibrary.git /tmp/unisim
+          test "$(git -C /tmp/unisim rev-parse HEAD)" = 1c8e05fd1e9a79ceb8b996a0996674122eed086f
+      - name: Apply the inspected 32-lane changes
+        run: |
+          python3 .github/apply32.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/validate32.py')
+          s = p.read_text()
+          old = "search = '+:' + str(root) + ':' + str(root / 'test')"
+          assert s.count(old) == 1
+          s = s.replace(old, "search = '+:' + str(root / 'test')")
+          # The host rejects count zero; the RTL defensively maps it to log2(1).
+          old = 'calculateLog2PWLQ12(val[i])'
+          assert s.count(old) == 1
+          s = s.replace(old, '(val[i] == 0 ? 0 : calculateLog2PWLQ12(val[i]))')
+          p.write_text(s)
+          PY
+      - name: Elaborate and verify production RTL, boundaries and host model
+        run: python3 -u .github/validate32.py
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: morbius-profiler32-validation
+          path: /tmp/morbius32-validation/logs
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Publish clean main with the requested author and committer
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+          make -C sw/host_morbius_plus clean
+          rm -rf hw/kernel_morbius_plus/obj
+          git rm -r -f .github
+          git add -- hw/kernel_morbius_plus sw/host_morbius_plus/MorbiusPlus.h
+          git diff --cached --check
+          tree=$(git write-tree)
+          final=$(printf '%s\n' 'Expand Morbius+ to 32 Profiler PEs and 32 PWL lanes' | git commit-tree "$tree" -p "$BASE_COMMIT")
+          test -z "$(git ls-tree -r --name-only "$final" | grep '^.github/' || true)"
+          test -z "$(git ls-tree -r --name-only "$final" | grep -E '(^|/)obj/' || true)"
+          git show -s --format='%H%n%an <%ae>%n%cn <%ce>' "$final"
+          git diff --stat "$BASE_COMMIT" "$final"
+          git push --force-with-lease=refs/heads/main:${GITHUB_SHA} origin "$final":refs/heads/main
+      - name: Remove only this temporary attempt if validation fails
+        if: failure()
+        shell: bash
+        run: git push --force-with-lease=refs/heads/main:${GITHUB_SHA} origin "$BASE_COMMIT":refs/heads/main
