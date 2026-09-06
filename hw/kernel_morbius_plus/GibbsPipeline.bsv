@@ -64,9 +64,10 @@ typedef struct {
 } ReservoirMultiplyResponse deriving (Bits, Eq, FShow);
 
 typedef struct {
-	Vector#(8, SegmentMass) sum2;
-	Vector#(4, SegmentMass) sum4;
-	Vector#(2, SegmentMass) sum8;
+	Vector#(16, SegmentMass) sum2;
+	Vector#(8, SegmentMass) sum4;
+	Vector#(4, SegmentMass) sum8;
+	Vector#(2, SegmentMass) sum16;
 	SegmentMass total;
 } WeightTree deriving (Bits, Eq, FShow);
 
@@ -101,27 +102,28 @@ endfunction
 
 function LogProb maxLogProbSegment(Vector#(NumPE_Profiler, LogProb) value,
 					   Bit#(ProfilerValidWidth) validNum);
-	Vector#(16, LogProb) masked = newVector;
-	Vector#(8, LogProb) max2 = newVector;
-	Vector#(4, LogProb) max4 = newVector;
-	Vector#(2, LogProb) max8 = newVector;
+	Vector#(32, LogProb) masked = newVector;
+	Vector#(16, LogProb) max2 = newVector;
+	Vector#(8, LogProb) max4 = newVector;
+	Vector#(4, LogProb) max8 = newVector;
+	Vector#(2, LogProb) max16 = newVector;
 
-	for ( Integer i = 0; i < 16; i = i + 1 ) begin
+	for ( Integer i = 0; i < 32; i = i + 1 ) begin
 		masked[i] = fromInteger(i) < validNum ? value[i] : 0;
 	end
+	for ( Integer i = 0; i < 16; i = i + 1 ) begin
+		max2[i] = masked[2 * i] > masked[2 * i + 1] ? masked[2 * i] : masked[2 * i + 1];
+	end
 	for ( Integer i = 0; i < 8; i = i + 1 ) begin
-		max2[i] = masked[2 * i] > masked[2 * i + 1] ?
-			  masked[2 * i] : masked[2 * i + 1];
+		max4[i] = max2[2 * i] > max2[2 * i + 1] ? max2[2 * i] : max2[2 * i + 1];
 	end
 	for ( Integer i = 0; i < 4; i = i + 1 ) begin
-		max4[i] = max2[2 * i] > max2[2 * i + 1] ?
-			  max2[2 * i] : max2[2 * i + 1];
+		max8[i] = max4[2 * i] > max4[2 * i + 1] ? max4[2 * i] : max4[2 * i + 1];
 	end
 	for ( Integer i = 0; i < 2; i = i + 1 ) begin
-		max8[i] = max4[2 * i] > max4[2 * i + 1] ?
-			  max4[2 * i] : max4[2 * i + 1];
+		max16[i] = max8[2 * i] > max8[2 * i + 1] ? max8[2 * i] : max8[2 * i + 1];
 	end
-	return max8[0] > max8[1] ? max8[0] : max8[1];
+	return max16[0] > max16[1] ? max16[0] : max16[1];
 endfunction
 
 function WeightTree buildWeightTree(Vector#(NumPE_Profiler, WeightValue) weight);
@@ -129,18 +131,22 @@ function WeightTree buildWeightTree(Vector#(NumPE_Profiler, WeightValue) weight)
 		sum2: replicate(0),
 		sum4: replicate(0),
 		sum8: replicate(0),
+		sum16: replicate(0),
 		total: 0
 		};
-	for ( Integer i = 0; i < 8; i = i + 1 ) begin
+	for ( Integer i = 0; i < 16; i = i + 1 ) begin
 		tree.sum2[i] = zeroExtend(weight[2 * i]) + zeroExtend(weight[2 * i + 1]);
 	end
-	for ( Integer i = 0; i < 4; i = i + 1 ) begin
+	for ( Integer i = 0; i < 8; i = i + 1 ) begin
 		tree.sum4[i] = tree.sum2[2 * i] + tree.sum2[2 * i + 1];
 	end
-	for ( Integer i = 0; i < 2; i = i + 1 ) begin
+	for ( Integer i = 0; i < 4; i = i + 1 ) begin
 		tree.sum8[i] = tree.sum4[2 * i] + tree.sum4[2 * i + 1];
 	end
-	tree.total = tree.sum8[0] + tree.sum8[1];
+	for ( Integer i = 0; i < 2; i = i + 1 ) begin
+		tree.sum16[i] = tree.sum8[2 * i] + tree.sum8[2 * i + 1];
+	end
+	tree.total = tree.sum16[0] + tree.sum16[1];
 	return tree;
 endfunction
 
@@ -149,22 +155,28 @@ function Bit#(ProfilerOffsetWidth) selectLocalCandidate(
 					WeightTree tree,
 					Bit#(24) randomFraction,
 					Bit#(ProfilerValidWidth) validNum);
-	UInt#(47) totalValue = zeroExtend(tree.total);
-	UInt#(47) randomValue = zeroExtend(unpack(randomFraction));
-	UInt#(47) product = totalValue * randomValue;
+	// Keep the complete 24-bit mass by 24-bit random product.
+	UInt#(48) totalValue = zeroExtend(tree.total);
+	UInt#(48) randomValue = zeroExtend(unpack(randomFraction));
+	UInt#(48) product = totalValue * randomValue;
 	SegmentMass remaining = truncate(product >> 24);
 	Bit#(ProfilerValidWidth) selected = 0;
 
-	if ( remaining >= tree.sum8[0] ) begin
-		selected = selected + 8;
-		remaining = remaining - tree.sum8[0];
+	if ( remaining >= tree.sum16[0] ) begin
+		selected = selected + 16;
+		remaining = remaining - tree.sum16[0];
 	end
-	Bit#(2) index4 = truncate(selected >> 2);
+	Bit#(2) index8 = truncate(selected >> 3);
+	if ( remaining >= tree.sum8[index8] ) begin
+		selected = selected + 8;
+		remaining = remaining - tree.sum8[index8];
+	end
+	Bit#(3) index4 = truncate(selected >> 2);
 	if ( remaining >= tree.sum4[index4] ) begin
 		selected = selected + 4;
 		remaining = remaining - tree.sum4[index4];
 	end
-	Bit#(3) index2 = truncate(selected >> 1);
+	Bit#(4) index2 = truncate(selected >> 1);
 	if ( remaining >= tree.sum2[index2] ) begin
 		selected = selected + 2;
 		remaining = remaining - tree.sum2[index2];
@@ -402,7 +414,7 @@ module mkGibbsPipelineArray(GibbsPipelineArrayIfc);
 	endrule
 
 	//------------------------------------------------------------------------------------
-	// Profiler Phase 1: one LPM column and shared 16-symbol windows per cycle
+	// Profiler Phase 1: one LPM column and shared 32-symbol windows per cycle
 	//------------------------------------------------------------------------------------
 	rule profilerPhase1Request1 ( executionStartedR && stateR == ARRAY_PROFILE && phase1RequestOnR );
 		Bit#(ProfilerValidWidth) validNum = calculateValidNum(candidateNumR,

@@ -7,7 +7,7 @@ import Vector::*;
 // Fixed U50 prototype configuration
 //------------------------------------------------------------------------------------
 typedef 16 NumPipeline;
-typedef 16 NumPE_Profiler;
+typedef 32 NumPE_Profiler;
 typedef 4 NumPE_LPM;
 typedef 4 PipelinePerResultBeat;
 typedef 2 ProfilerSequenceReplicaNum;
@@ -16,6 +16,12 @@ typedef TDiv#(NumPE_Profiler, 2) ProfilerAddPairNum;
 typedef 16 SequenceRowSymbolNum;
 typedef 64 SequenceRowNum;
 typedef TDiv#(SequenceRowNum, 2) SequenceBankDepth;
+// Profiler rows supply a complete candidate group; motif rows remain 16 symbols.
+typedef NumPE_Profiler ProfilerRowSymbolNum;
+typedef TDiv#(1024, ProfilerRowSymbolNum) ProfilerRowNum;
+typedef TDiv#(ProfilerRowNum, 2) ProfilerBankDepth;
+typedef TLog#(ProfilerRowNum) ProfilerRowAddressWidth;
+typedef TLog#(ProfilerBankDepth) ProfilerBankAddressWidth;
 typedef 128 MotifLengthMax;
 typedef 20 AlphabetMax;
 typedef 32 MotifGroupDepth;
@@ -35,7 +41,7 @@ typedef UInt#(18) BpmCount;
 typedef UInt#(17) LogValue;
 typedef UInt#(24) LogProb;
 typedef UInt#(19) WeightValue;
-typedef UInt#(23) SegmentMass;
+typedef UInt#(24) SegmentMass;
 typedef UInt#(36) GlobalMass;
 typedef UInt#(25) ScoreValue;
 typedef UInt#(24) PwlInput;
@@ -46,6 +52,7 @@ typedef Vector#(NumPE_LPM, BpmEntries) BpmGroup;
 typedef Vector#(NumPE_LPM, LpmEntries) LpmGroup;
 typedef Bit#(360) MatrixColumn;
 typedef Vector#(SequenceRowSymbolNum, Symbol) SequenceRow;
+typedef Vector#(ProfilerRowSymbolNum, Symbol) ProfilerSequenceRow;
 typedef Vector#(NumPE_Profiler, Symbol) SequenceWindow;
 typedef Vector#(NumPE_LPM, Symbol) MotifSymbolGroup;
 typedef Bit#(AlphabetMax) SymbolSelect;
@@ -282,16 +289,26 @@ function SequenceRow packSequenceRow(Bit#(512) word, Integer rowIdx);
 	return result;
 endfunction
 
-function SequenceWindow selectSequenceWindow(SequenceRow row0,
-				      SequenceRow row1,
-				      Bit#(4) startIndex);
-	Vector#(32, Symbol) shifted = append(row0, row1);
-	for ( Integer stage = 0; stage < 4; stage = stage + 1 ) begin
+// One 64-byte input beat contains two complete 32-symbol Profiler rows.
+function ProfilerSequenceRow packProfilerSequenceRow(Bit#(512) word, Integer rowIdx);
+	ProfilerSequenceRow result = newVector;
+	for ( Integer i = 0; i < valueOf(ProfilerRowSymbolNum); i = i + 1 ) begin
+		Integer low = (rowIdx * valueOf(ProfilerRowSymbolNum) + i) * 8;
+		result[i] = word[low + 4:low];
+	end
+	return result;
+endfunction
+
+function SequenceWindow selectSequenceWindow(ProfilerSequenceRow row0,
+					    ProfilerSequenceRow row1,
+					    Bit#(ProfilerOffsetWidth) startIndex);
+	Vector#(TMul#(2, ProfilerRowSymbolNum), Symbol) shifted = append(row0, row1);
+	for ( Integer stage = 0; stage < valueOf(ProfilerOffsetWidth); stage = stage + 1 ) begin
 		Integer distance = 2 ** stage;
-		Vector#(32, Symbol) nextValue = newVector;
-		for ( Integer i = 0; i < 32; i = i + 1 ) begin
+		Vector#(TMul#(2, ProfilerRowSymbolNum), Symbol) nextValue = newVector;
+		for ( Integer i = 0; i < 2 * valueOf(ProfilerRowSymbolNum); i = i + 1 ) begin
 			Symbol moved = 0;
-			if ( i + distance < 32 ) moved = shifted[i + distance];
+			if ( i + distance < 2 * valueOf(ProfilerRowSymbolNum) ) moved = shifted[i + distance];
 			nextValue[i] = startIndex[stage] == 1 ? moved : shifted[i];
 		end
 		shifted = nextValue;
@@ -303,15 +320,24 @@ function SequenceWindow selectSequenceWindow(SequenceRow row0,
 	return result;
 endfunction
 
-
-// Motif maintenance needs only four symbols, not a full Profiler window.
+// Keep pipeline-specific motif access independent of the wider Profiler rows.
 function MotifSymbolGroup selectMotifWindow(SequenceRow row0,
 					  SequenceRow row1,
 					  Bit#(4) startIndex);
-	SequenceWindow window = selectSequenceWindow(row0, row1, startIndex);
+	Vector#(32, Symbol) shifted = append(row0, row1);
+	for ( Integer stage = 0; stage < 4; stage = stage + 1 ) begin
+		Integer distance = 2 ** stage;
+		Vector#(32, Symbol) nextValue = newVector;
+		for ( Integer i = 0; i < 32; i = i + 1 ) begin
+			Symbol moved = 0;
+			if ( i + distance < 32 ) moved = shifted[i + distance];
+			nextValue[i] = startIndex[stage] == 1 ? moved : shifted[i];
+		end
+		shifted = nextValue;
+	end
 	MotifSymbolGroup result = newVector;
 	for ( Integer i = 0; i < valueOf(NumPE_LPM); i = i + 1 ) begin
-		result[i] = window[i];
+		result[i] = shifted[i];
 	end
 	return result;
 endfunction

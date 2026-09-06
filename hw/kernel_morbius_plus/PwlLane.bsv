@@ -203,7 +203,7 @@ module mkPwlArray(PwlArrayIfc);
 	FIFOF#(PwlArrayResponse) responseQ <- mkSizedFIFOF(2);
 
 	//------------------------------------------------------------------------------------
-	// Stage 1: eight dual-mode lanes and eight exp-only lanes
+	// Stage 1: eight dual-mode lanes and twenty-four exp-only lanes
 	//------------------------------------------------------------------------------------
 	rule process1;
 		PwlPackedRequest request = requestQ.first;

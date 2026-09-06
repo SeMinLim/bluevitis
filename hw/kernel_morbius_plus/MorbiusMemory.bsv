@@ -79,6 +79,11 @@ typedef struct {
 	Bit#(4) startIndex;
 } SequenceWindowMeta deriving (Bits, Eq, FShow);
 
+typedef struct {
+	Bool firstRowEven;
+	Bit#(ProfilerOffsetWidth) startIndex;
+} ProfilerWindowMeta deriving (Bits, Eq, FShow);
+
 interface SequenceMemoryIfc;
 	method Action loadBeat(Bit#(4) beatIdx, Bit#(512) word);
 	method Bool loadIdle;
@@ -87,31 +92,21 @@ interface SequenceMemoryIfc;
 endinterface
 
 module mkSequenceMemory(SequenceMemoryIfc);
-	SdpMemoryIfc#(Bit#(5), SequenceRow) evenRowMemory <-
-		mkSdpMemory(valueOf(SequenceBankDepth));
-	SdpMemoryIfc#(Bit#(5), SequenceRow) oddRowMemory <-
-		mkSdpMemory(valueOf(SequenceBankDepth));
+	SdpMemoryIfc#(Bit#(ProfilerBankAddressWidth), ProfilerSequenceRow) evenRowMemory <-
+		mkSdpMemory(valueOf(ProfilerBankDepth));
+	SdpMemoryIfc#(Bit#(ProfilerBankAddressWidth), ProfilerSequenceRow) oddRowMemory <-
+		mkSdpMemory(valueOf(ProfilerBankDepth));
 
 	FIFOF#(SequenceLoadRequest) loadQ <- mkSizedFIFOF(2);
-	FIFOF#(SequenceWindowMeta) windowMetaQ <- mkSizedFIFOF(2);
-	Reg#(Bool) loadSecondOn <- mkReg(False);
-	Reg#(SequenceLoadRequest) loadRequestR <- mkRegU;
+	FIFOF#(ProfilerWindowMeta) windowMetaQ <- mkSizedFIFOF(2);
 
-	rule loadRows1 ( !loadSecondOn );
+	// Two 32-symbol rows are written in parallel from each 64-byte beat.
+	rule loadRows1;
 		SequenceLoadRequest request = loadQ.first;
 		loadQ.deq;
-		Bit#(5) pairAddress = {request.beatIdx, 1'b0};
-		evenRowMemory.write(pairAddress, packSequenceRow(request.word, 0));
-		oddRowMemory.write(pairAddress, packSequenceRow(request.word, 1));
-		loadRequestR <= request;
-		loadSecondOn <= True;
-	endrule
-
-	rule loadRows2 ( loadSecondOn );
-		Bit#(5) pairAddress = {loadRequestR.beatIdx, 1'b0} + 1;
-		evenRowMemory.write(pairAddress, packSequenceRow(loadRequestR.word, 2));
-		oddRowMemory.write(pairAddress, packSequenceRow(loadRequestR.word, 3));
-		loadSecondOn <= False;
+		Bit#(ProfilerBankAddressWidth) pairAddress = request.beatIdx;
+		evenRowMemory.write(pairAddress, packProfilerSequenceRow(request.word, 0));
+		oddRowMemory.write(pairAddress, packProfilerSequenceRow(request.word, 1));
 	endrule
 
 	method Action loadBeat(Bit#(4) beatIdx, Bit#(512) word);
@@ -122,14 +117,14 @@ module mkSequenceMemory(SequenceMemoryIfc);
 	endmethod
 
 	method Bool loadIdle;
-		return !loadQ.notEmpty && !loadSecondOn;
+		return !loadQ.notEmpty;
 	endmethod
 
-	method Action readWindow(Bit#(11) startPosition)
-		if ( !loadQ.notEmpty && !loadSecondOn );
-		Bit#(6) rowAddress = truncate(startPosition >> 4);
-		Bit#(5) pairAddress = truncate(rowAddress >> 1);
-		Bit#(4) startIndex = truncate(startPosition);
+	method Action readWindow(Bit#(11) startPosition) if ( !loadQ.notEmpty );
+		Bit#(ProfilerRowAddressWidth) rowAddress =
+			truncate(startPosition >> valueOf(ProfilerOffsetWidth));
+		Bit#(ProfilerBankAddressWidth) pairAddress = truncate(rowAddress >> 1);
+		Bit#(ProfilerOffsetWidth) startIndex = truncate(startPosition);
 		Bool firstRowEven = rowAddress[0] == 0;
 
 		if ( firstRowEven ) begin
@@ -137,25 +132,26 @@ module mkSequenceMemory(SequenceMemoryIfc);
 			oddRowMemory.readRequest(pairAddress);
 		end else begin
 			oddRowMemory.readRequest(pairAddress);
-			if ( rowAddress == fromInteger(valueOf(SequenceRowNum) - 1) ) begin
+			if ( rowAddress == fromInteger(valueOf(ProfilerRowNum) - 1) ) begin
+				// Wrapped symbols belong only to masked, out-of-range candidates.
 				evenRowMemory.readRequest(0);
 			end else begin
 				evenRowMemory.readRequest(pairAddress + 1);
 			end
 		end
-		windowMetaQ.enq(SequenceWindowMeta{
+		windowMetaQ.enq(ProfilerWindowMeta{
 			firstRowEven: firstRowEven,
 			startIndex: startIndex
 			});
 	endmethod
 
 	method ActionValue#(SequenceWindow) getWindow;
-		SequenceWindowMeta meta = windowMetaQ.first;
+		ProfilerWindowMeta meta = windowMetaQ.first;
 		windowMetaQ.deq;
-		SequenceRow evenRow = evenRowMemory.readResponse;
-		SequenceRow oddRow = oddRowMemory.readResponse;
-		SequenceRow firstRow = meta.firstRowEven ? evenRow : oddRow;
-		SequenceRow secondRow = meta.firstRowEven ? oddRow : evenRow;
+		ProfilerSequenceRow evenRow = evenRowMemory.readResponse;
+		ProfilerSequenceRow oddRow = oddRowMemory.readResponse;
+		ProfilerSequenceRow firstRow = meta.firstRowEven ? evenRow : oddRow;
+		ProfilerSequenceRow secondRow = meta.firstRowEven ? oddRow : evenRow;
 		return selectSequenceWindow(firstRow, secondRow, meta.startIndex);
 	endmethod
 endmodule
